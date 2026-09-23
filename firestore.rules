@@ -1,0 +1,14 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Nothing in this app is read or written directly from the browser —
+    // every request goes through the Express server, which uses the
+    // Firebase Admin SDK (a service account) and bypasses these rules
+    // entirely. So client access is denied across the board: this is what
+    // keeps PINs and admin password hashes from being queryable by anyone
+    // who opens devtools, even if they never touch the dashboard's UI.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

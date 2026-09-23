@@ -67,6 +67,7 @@ label{font-size:12px;color:var(--muted);}
 <main id="app"></main>
 
 <script>
+const API = ""; // same origin
 const PERSONAS = ["Scanner","Team Leader","Hub Manager and above","City Lead","Regional Manager"];
 const ICONS = {"Scanner":"📦","Team Leader":"🧑‍🤝‍🧑","Hub Manager and above":"🏭","City Lead":"🏙️","Regional Manager":"🌍"};
 const slug = p => p.replace(/[^a-zA-Z0-9]/g,"_");
@@ -74,12 +75,28 @@ const app = document.getElementById("app");
 const crumbSub = document.getElementById("crumbSub");
 const homeBtn = document.getElementById("homeBtn");
 
-let db=null, user=null, viewerId=null;
+let deviceId=null; // this device's persistent identity (replaces Claude's user.id())
 let state = { view:"loading" };
 let kioskOverride = null;
 try{ const saved = sessionStorage.getItem("kioskProfile"); if(saved) kioskOverride = JSON.parse(saved); }catch(e){}
 
-function currentUid(){ return kioskOverride ? kioskOverride.id : viewerId; }
+function currentUid(){ return kioskOverride ? kioskOverride.id : deviceId; }
+
+function ensureDeviceId(){
+  deviceId = localStorage.getItem("lmrDeviceId");
+  if(!deviceId){
+    deviceId = (crypto.randomUUID ? crypto.randomUUID() : (Date.now()+"_"+Math.random().toString(36).slice(2)));
+    localStorage.setItem("lmrDeviceId", deviceId);
+  }
+}
+
+async function api(path, opts){
+  const res = await fetch(API+path, Object.assign({headers:{"Content-Type":"application/json"}}, opts));
+  let data = null;
+  try{ data = await res.json(); }catch(e){}
+  if(!res.ok){ const err = new Error((data&&data.error)||"request_failed"); err.status=res.status; err.data=data; throw err; }
+  return data;
+}
 
 function showToast(msg, ms){
   let t = document.getElementById("toastEl");
@@ -91,9 +108,7 @@ function showToast(msg, ms){
 }
 
 async function init(){
-  db = await claude.use("db");
-  user = await claude.use("user");
-  if(user){ viewerId = await user.id(); }
+  ensureDeviceId();
   homeBtn.onclick = goHome;
   updateAuthBtn();
   goHome();
@@ -136,26 +151,16 @@ function renderLogin(){
     const msg = document.getElementById("lMsg");
     if(!idVal || !/^\d{4}$/.test(pin)){ msg.innerHTML = `<div class="msg msg-danger">Enter your mobile/email and a 4-digit PIN.</div>`; return; }
     try{
-      // Query only the record(s) matching what was typed — never pull the whole
-      // profiles collection to the browser (that would leak every PIN on file).
-      let match = await findApprovedProfileByPin("phone", idVal, pin);
-      if(!match) match = await findApprovedProfileByPin("email", idVal, pin);
-      if(!match){ msg.innerHTML = `<div class="msg msg-danger">No match found. Check your details or ask admin.</div>`; return; }
-      const pdata = match.data();
-      kioskOverride = { id: match.id, name: pdata.name, roles: pdata.roles || (pdata.role?[pdata.role]:[]), profile: pdata };
+      const result = await api("/api/staff-login", {method:"POST", body: JSON.stringify({id:idVal, pin})});
+      kioskOverride = { id: result.id, name: result.data.name, roles: result.data.roles || (result.data.role?[result.data.role]:[]), profile: result.data };
       sessionStorage.setItem("kioskProfile", JSON.stringify(kioskOverride));
       updateAuthBtn();
       goHome();
-    }catch(e){ msg.innerHTML = `<div class="msg msg-danger">Login failed. Please try again.</div>`; }
+    }catch(e){
+      if(e.status===404) msg.innerHTML = `<div class="msg msg-danger">No match found. Check your details or ask admin.</div>`;
+      else msg.innerHTML = `<div class="msg msg-danger">Login failed. Please try again.</div>`;
+    }
   };
-}
-
-async function findApprovedProfileByPin(field, value, pin){
-  const snap = await db.collection("profiles").where(field,"==",value).limit(5).get();
-  return snap.docs.find(d=>{
-    const p = d.data();
-    return p.status==="approved" && p.pin===pin;
-  }) || null;
 }
 
 async function goHome(){
@@ -163,18 +168,17 @@ async function goHome(){
     state = { view:"persona", persona: kioskOverride.roles[0]||PERSONAS[0], roles: kioskOverride.roles, profile: kioskOverride.profile, kiosk:true };
     return render();
   }
-  if(!db || !viewerId){ state={view:"nodb"}; return render(); }
   try{
-    const profSnap = await db.doc("profiles/"+viewerId).get();
-    if(profSnap.exists && profSnap.data().status==="approved"){
-      const pdata = profSnap.data();
+    const profJson = await api("/api/profile/"+deviceId);
+    if(profJson.exists){
+      const pdata = profJson.data;
       const roles = pdata.roles || (pdata.role ? [pdata.role] : []);
       state = { view:"persona", persona: roles[0]||PERSONAS[0], roles, profile: pdata };
       return render();
     }
-    const regSnap = await db.doc("registrations/"+viewerId).get();
-    if(regSnap.exists){
-      const r = regSnap.data();
+    const regJson = await api("/api/registration/"+deviceId);
+    if(regJson.exists){
+      const r = regJson.data;
       if(r.status==="rejected"){ state={view:"rejected", reg:r}; return render(); }
       if(r.status==="revoked"){ state={view:"revoked", reg:r}; return render(); }
       state={view:"pending", reg:r}; return render();
@@ -222,16 +226,14 @@ function renderRegister(prefill){
   document.getElementById("rSubmit").onclick = async ()=>{
     const pin = document.getElementById("rPin").value.trim();
     const data = {
-      uid: viewerId,
+      uid: deviceId,
       name: document.getElementById("rName").value.trim(),
       phone: document.getElementById("rPhone").value.trim().toLowerCase(),
       email: document.getElementById("rEmail").value.trim().toLowerCase(),
       hub: document.getElementById("rHub").value.trim(),
       city: document.getElementById("rCity").value.trim(),
       role: sel.value,
-      pin,
-      status: "pending",
-      submittedAt: Date.now()
+      pin
     };
     if(!data.name || !data.phone || !data.email || !data.hub || !data.city){
       document.getElementById("rMsg").innerHTML=`<div class="msg msg-danger">All fields are required.</div>`; return;
@@ -240,8 +242,8 @@ function renderRegister(prefill){
     if(!/^\d{7,15}$/.test(data.phone.replace(/[\s\-+]/g,""))){ document.getElementById("rMsg").innerHTML=`<div class="msg msg-danger">Enter a valid mobile number.</div>`; return; }
     if(!/^\d{4}$/.test(pin)){ document.getElementById("rMsg").innerHTML=`<div class="msg msg-danger">PIN must be exactly 4 digits.</div>`; return; }
     try{
-      await db.doc("registrations/"+viewerId).set(data);
-      state={view:"pending", reg:data}; render();
+      const saved = await api("/api/register", {method:"POST", body: JSON.stringify(data)});
+      state={view:"pending", reg:saved}; render();
     }catch(e){ document.getElementById("rMsg").innerHTML=`<div class="msg msg-danger">Could not submit. Please try again.</div>`; }
   };
 }
@@ -309,12 +311,11 @@ async function renderPersona(){
 async function loadContentAndProgress(p){
   const list = document.getElementById("contentList");
   try{
-    const snap = await db.collection("content").where("persona","==",p).orderBy("createdAt","asc").get();
-    currentContentDocs = snap.docs.map(d=>({id:d.id, data:d.data()}));
+    currentContentDocs = await api("/api/content?persona="+encodeURIComponent(p));
   }catch(e){ list.innerHTML = `<div class="empty">Could not load content.</div>`; return; }
   try{
-    const progSnap = await db.doc("progress/"+slug(p)+"_"+currentUid()).get();
-    currentProgress = (progSnap.exists && progSnap.data().completed) || {};
+    const progJson = await api("/api/progress?persona="+encodeURIComponent(p)+"&uid="+encodeURIComponent(currentUid()));
+    currentProgress = progJson.completed || {};
   }catch(e){ currentProgress = {}; }
   renderContentListAndAssessButton(p);
 }
@@ -472,15 +473,9 @@ function setupVideoGate(overlay, persona, contentId, c, btn){
 
 async function markContentComplete(persona, contentId){
   const uid = currentUid();
-  const ref = db.doc("progress/"+slug(persona)+"_"+uid);
   try{
-    const snap = await ref.get();
-    const completed = (snap.exists && snap.data().completed) || {};
-    if(!completed[contentId]){
-      completed[contentId] = true;
-      await ref.set({persona, uid, completed, updatedAt:Date.now()});
-    }
-    currentProgress = completed;
+    const result = await api("/api/progress", {method:"POST", body: JSON.stringify({persona, uid, contentId})});
+    currentProgress = result.completed;
     renderContentListAndAssessButton(persona);
     showToast("Marked complete ✅");
   }catch(e){ showToast("Could not save progress."); }
@@ -492,14 +487,14 @@ async function renderAssessment(){
   app.innerHTML = `<div class="section-title">📝 ${p} — Assessment</div><div id="assessBody">Loading…</div>`;
   const body = document.getElementById("assessBody");
   try{
-    const docSnap = await db.doc("assessments/"+slug(p)).get();
-    const questions = (docSnap.exists && docSnap.data().questions) || [];
+    const aJson = await api("/api/assessment?persona="+encodeURIComponent(p));
+    const questions = aJson.questions || [];
     if(questions.length===0){ body.innerHTML = `<div class="empty">No assessment has been set up for ${p} yet.</div>`; return; }
-    let subSnap = await db.doc("submissions/"+slug(p)+"_"+currentUid()).get();
-    if(subSnap.exists){
-      body.innerHTML = `<div class="msg msg-ok">✅ You already submitted this assessment on ${new Date(subSnap.data().submittedAt).toLocaleString()}.</div>
+    const subJson = await api("/api/submission?persona="+encodeURIComponent(p)+"&uid="+encodeURIComponent(currentUid()));
+    if(subJson.exists){
+      body.innerHTML = `<div class="msg msg-ok">✅ You already submitted this assessment on ${new Date(subJson.data.submittedAt).toLocaleString()}.</div>
       <button class="btn" id="resub">Submit again</button>`;
-      document.getElementById("resub").onclick = ()=>drawForm(questions, body, p, subSnap.data().answers);
+      document.getElementById("resub").onclick = ()=>drawForm(questions, body, p, subJson.data.answers);
       return;
     }
     drawForm(questions, body, p, {});
@@ -522,7 +517,7 @@ function drawForm(questions, body, p, prior){
     const answers = {};
     form.querySelectorAll("textarea").forEach(t=> answers[t.dataset.qid]=t.value);
     try{
-      await db.doc("submissions/"+slug(p)+"_"+currentUid()).set({persona:p, uid:currentUid(), answers, submittedAt:Date.now()});
+      await api("/api/submission", {method:"POST", body: JSON.stringify({persona:p, uid:currentUid(), answers})});
       body.innerHTML = `<div class="msg msg-ok">✅ Assessment submitted. Thank you!</div>`;
     }catch(e){ showToast("Could not submit."); }
   };
