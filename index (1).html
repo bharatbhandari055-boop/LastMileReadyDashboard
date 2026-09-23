@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>LastMile Ready — Training Dashboard</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTQiIGZpbGw9IiMyZjU0OTYiLz48cGF0aCBkPSJNMTggMzMgTDI4IDQzIEw0NyAyMSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmZmZmIiBzdHJva2Utd2lkdGg9IjYiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjwvc3ZnPgo=">
+<style>
+:root{
+  --bg:#f5f6f8; --card:#ffffff; --text:#1a1d23; --muted:#6b7280; --border:#e3e5e9;
+  --accent:#2f5496; --accent-2:#eaf0fb; --danger:#c0392b; --ok:#1f8a4c; --warn:#a86a00; --warn-bg:#fff3d9;
+  box-sizing:border-box; padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#14161a; --card:#1c1f26; --text:#eef0f3; --muted:#9aa1ac; --border:#2b2f38; --accent:#7fa6e0; --accent-2:#20293a; --warn-bg:#332a10;
+  }
+}
+:root[data-theme="dark"]{ --bg:#14161a; --card:#1c1f26; --text:#eef0f3; --muted:#9aa1ac; --border:#2b2f38; --accent:#7fa6e0; --accent-2:#20293a; --warn-bg:#332a10; }
+html{scroll-padding-top:env(safe-area-inset-top,0px);}
+*{box-sizing:border-box;}
+body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--text);}
+header{position:sticky;top:0;padding:14px 18px;padding-top:calc(14px + env(safe-area-inset-top,0px));background:var(--card);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;z-index:10;}
+h1{font-size:17px;margin:0;}
+.sub{color:var(--muted);font-size:12px;}
+main{max-width:860px;margin:0 auto;padding:18px;}
+.btn{border:1px solid var(--border);background:var(--card);color:var(--text);padding:9px 14px;border-radius:8px;font-size:13px;cursor:pointer;}
+.btn:hover{border-color:var(--accent);}
+.btn-primary{background:var(--accent);color:#fff;border-color:var(--accent);}
+.btn-sm{padding:5px 10px;font-size:12px;}
+.btn[disabled]{opacity:.5;cursor:not-allowed;}
+.content-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:10px;overflow-x:auto;}
+.tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:20px;background:var(--accent-2);color:var(--accent);margin-bottom:6px;}
+.row{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;}
+.field{display:block;width:100%;padding:8px;margin:6px 0;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px;}
+label{font-size:12px;color:var(--muted);}
+.top-actions{display:flex;gap:8px;flex-wrap:wrap;}
+.section-title{font-size:15px;font-weight:600;margin:20px 0 4px;}
+.empty{color:var(--muted);font-size:13px;padding:16px;text-align:center;border:1px dashed var(--border);border-radius:10px;}
+.q-block{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px;}
+.msg{font-size:13px;padding:10px;border-radius:8px;background:var(--accent-2);color:var(--accent);margin:10px 0;}
+.msg-ok{background:#e6f6ec;color:var(--ok);}
+.msg-warn{background:var(--warn-bg);color:var(--warn);}
+.msg-danger{background:#fbe7e4;color:var(--danger);}
+.hidden{display:none;}
+.viewer-overlay{position:fixed;inset:0;background:#000;z-index:90;display:flex;flex-direction:column;}
+.viewer-header{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;padding:10px 14px;padding-top:calc(10px + env(safe-area-inset-top,0px));background:#101114;flex-wrap:wrap;}
+.viewer-header div.vh-title{color:#fff;font-weight:600;font-size:14px;}
+.viewer-header div.vh-desc{color:#c9ccd3;font-size:12px;margin-top:2px;}
+.viewer-header .btn{background:#26282f;color:#fff;border-color:#3a3d46;}
+.viewer-media{flex:1;min-height:0;}
+.card-narrow{max-width:440px;margin:30px auto;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:22px;}
+.toast{position:fixed;bottom:calc(16px + env(safe-area-inset-bottom,0px));left:50%;transform:translateX(-50%);background:#1a1d23;color:#fff;padding:10px 16px;border-radius:8px;font-size:13px;z-index:100;max-width:90%;text-align:center;box-shadow:0 4px 14px rgba(0,0,0,.3);white-space:pre-line;display:none;}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>🎯 LastMile Ready</h1>
+    <div class="sub" id="crumbSub">Loading…</div>
+  </div>
+  <div class="top-actions">
+    <button class="btn" id="homeBtn">🏠 Home</button>
+    <button class="btn" id="authBtn">🔑 Login</button>
+  </div>
+</header>
+<main id="app"></main>
+
+<script>
+const PERSONAS = ["Scanner","Team Leader","Hub Manager and above","City Lead","Regional Manager"];
+const ICONS = {"Scanner":"📦","Team Leader":"🧑‍🤝‍🧑","Hub Manager and above":"🏭","City Lead":"🏙️","Regional Manager":"🌍"};
+const slug = p => p.replace(/[^a-zA-Z0-9]/g,"_");
+const app = document.getElementById("app");
+const crumbSub = document.getElementById("crumbSub");
+const homeBtn = document.getElementById("homeBtn");
+
+let db=null, user=null, viewerId=null;
+let state = { view:"loading" };
+let kioskOverride = null;
+try{ const saved = sessionStorage.getItem("kioskProfile"); if(saved) kioskOverride = JSON.parse(saved); }catch(e){}
+
+function currentUid(){ return kioskOverride ? kioskOverride.id : viewerId; }
+
+function showToast(msg, ms){
+  let t = document.getElementById("toastEl");
+  if(!t){ t=document.createElement("div"); t.id="toastEl"; t.className="toast"; document.body.appendChild(t); }
+  t.textContent = msg;
+  t.style.display = "block";
+  clearTimeout(t._timer);
+  t._timer = setTimeout(()=>{ t.style.display="none"; }, ms||4500);
+}
+
+async function init(){
+  db = await claude.use("db");
+  user = await claude.use("user");
+  if(user){ viewerId = await user.id(); }
+  homeBtn.onclick = goHome;
+  updateAuthBtn();
+  goHome();
+}
+
+function updateAuthBtn(){
+  const btn = document.getElementById("authBtn");
+  if(kioskOverride){
+    btn.textContent = "🔓 Logout ("+ (kioskOverride.name||"user") +")";
+    btn.onclick = logout;
+  } else {
+    btn.textContent = "🔑 Login";
+    btn.onclick = ()=>{ state={view:"login"}; render(); };
+  }
+}
+
+function logout(){
+  kioskOverride = null;
+  sessionStorage.removeItem("kioskProfile");
+  updateAuthBtn();
+  goHome();
+}
+
+// ---------------- LOGIN (kiosk / shared device) ----------------
+function renderLogin(){
+  crumbSub.textContent = "Login (for shared/kiosk devices)";
+  app.innerHTML = `<div class="card-narrow">
+    <div class="section-title" style="margin-top:0">🔑 Login</div>
+    <p style="font-size:12px;color:var(--muted)">Already registered and approved? Log in here with your mobile number or email and your 4-digit PIN — useful on a shared hub device so training loads under your own name, not whoever used it before.</p>
+    <label>Mobile Number or Email</label><input class="field" id="lId" placeholder="e.g. 98765xxxxx or you@company.com">
+    <label>4-digit PIN</label><input class="field" id="lPin" maxlength="4" inputmode="numeric">
+    <button class="btn btn-primary" id="lSubmit" style="width:100%;margin-top:8px">Login</button>
+    <div id="lMsg"></div>
+    <p style="font-size:12px;color:var(--muted);margin-top:14px">Not registered yet or don't have a PIN? <a href="#" id="lToRegister">Register here</a> instead.</p>
+  </div>`;
+  document.getElementById("lToRegister").onclick = (e)=>{ e.preventDefault(); state={view:"register"}; render(); };
+  document.getElementById("lSubmit").onclick = async ()=>{
+    const idVal = document.getElementById("lId").value.trim().toLowerCase();
+    const pin = document.getElementById("lPin").value.trim();
+    const msg = document.getElementById("lMsg");
+    if(!idVal || !/^\d{4}$/.test(pin)){ msg.innerHTML = `<div class="msg msg-danger">Enter your mobile/email and a 4-digit PIN.</div>`; return; }
+    try{
+      // Query only the record(s) matching what was typed — never pull the whole
+      // profiles collection to the browser (that would leak every PIN on file).
+      let match = await findApprovedProfileByPin("phone", idVal, pin);
+      if(!match) match = await findApprovedProfileByPin("email", idVal, pin);
+      if(!match){ msg.innerHTML = `<div class="msg msg-danger">No match found. Check your details or ask admin.</div>`; return; }
+      const pdata = match.data();
+      kioskOverride = { id: match.id, name: pdata.name, roles: pdata.roles || (pdata.role?[pdata.role]:[]), profile: pdata };
+      sessionStorage.setItem("kioskProfile", JSON.stringify(kioskOverride));
+      updateAuthBtn();
+      goHome();
+    }catch(e){ msg.innerHTML = `<div class="msg msg-danger">Login failed. Please try again.</div>`; }
+  };
+}
+
+async function findApprovedProfileByPin(field, value, pin){
+  const snap = await db.collection("profiles").where(field,"==",value).limit(5).get();
+  return snap.docs.find(d=>{
+    const p = d.data();
+    return p.status==="approved" && p.pin===pin;
+  }) || null;
+}
+
+async function goHome(){
+  if(kioskOverride){
+    state = { view:"persona", persona: kioskOverride.roles[0]||PERSONAS[0], roles: kioskOverride.roles, profile: kioskOverride.profile, kiosk:true };
+    return render();
+  }
+  if(!db || !viewerId){ state={view:"nodb"}; return render(); }
+  try{
+    const profSnap = await db.doc("profiles/"+viewerId).get();
+    if(profSnap.exists && profSnap.data().status==="approved"){
+      const pdata = profSnap.data();
+      const roles = pdata.roles || (pdata.role ? [pdata.role] : []);
+      state = { view:"persona", persona: roles[0]||PERSONAS[0], roles, profile: pdata };
+      return render();
+    }
+    const regSnap = await db.doc("registrations/"+viewerId).get();
+    if(regSnap.exists){
+      const r = regSnap.data();
+      if(r.status==="rejected"){ state={view:"rejected", reg:r}; return render(); }
+      if(r.status==="revoked"){ state={view:"revoked", reg:r}; return render(); }
+      state={view:"pending", reg:r}; return render();
+    }
+    state={view:"register"}; render();
+  }catch(e){ state={view:"register"}; render(); }
+}
+
+function render(){
+  if(state.view==="loading"){ app.innerHTML="Loading…"; return; }
+  if(state.view==="nodb"){ crumbSub.textContent="Not signed in"; app.innerHTML=`<div class="empty">Sign in to your organization account to use this dashboard.</div>`; return; }
+  if(state.view==="register") return renderRegister();
+  if(state.view==="login") return renderLogin();
+  if(state.view==="pending") return renderPending();
+  if(state.view==="rejected") return renderRejected();
+  if(state.view==="revoked") return renderRevoked();
+  if(state.view==="persona") return renderPersona();
+  if(state.view==="assessment") return renderAssessment();
+}
+
+// ---------------- REGISTRATION ----------------
+// Required: name, phone, email, hub, city, role, PIN. Record is saved as
+// "pending" and is only usable for login once an admin approves it —
+// the PIN is set now, by the user, at registration time.
+function renderRegister(prefill){
+  crumbSub.textContent = "New user registration";
+  const d = prefill || {};
+  app.innerHTML = `<div class="card-narrow">
+    <div class="section-title" style="margin-top:0">Register for training access</div>
+    <p style="color:var(--muted);font-size:12px">All fields below are required. Set your own 4-digit login PIN now — an admin still has to review and approve your registration before the PIN will work.</p>
+    <label>Full Name *</label><input class="field" id="rName" value="${escapeAttr(d.name)}">
+    <label>Mobile Number *</label><input class="field" id="rPhone" value="${escapeAttr(d.phone)}">
+    <label>Email ID *</label><input class="field" id="rEmail" type="email" value="${escapeAttr(d.email)}">
+    <label>Hub / DC / FC Name *</label><input class="field" id="rHub" value="${escapeAttr(d.hub)}">
+    <label>City Name *</label><input class="field" id="rCity" value="${escapeAttr(d.city)}">
+    <label>Designated Role *</label>
+    <select class="field" id="rRole"></select>
+    <label>Set a 4-digit PIN (for logging in on shared/kiosk devices) *</label>
+    <input class="field" id="rPin" maxlength="4" inputmode="numeric" placeholder="e.g. 4821" value="${escapeAttr(d.pin)}">
+    <button class="btn btn-primary" id="rSubmit" style="width:100%;margin-top:8px">Submit for Approval</button>
+    <div id="rMsg"></div>
+  </div>`;
+  const sel = document.getElementById("rRole");
+  PERSONAS.forEach(p=>{ const o=document.createElement("option"); o.value=p; o.textContent=p; if(p===d.role) o.selected=true; sel.appendChild(o); });
+  document.getElementById("rSubmit").onclick = async ()=>{
+    const pin = document.getElementById("rPin").value.trim();
+    const data = {
+      uid: viewerId,
+      name: document.getElementById("rName").value.trim(),
+      phone: document.getElementById("rPhone").value.trim().toLowerCase(),
+      email: document.getElementById("rEmail").value.trim().toLowerCase(),
+      hub: document.getElementById("rHub").value.trim(),
+      city: document.getElementById("rCity").value.trim(),
+      role: sel.value,
+      pin,
+      status: "pending",
+      submittedAt: Date.now()
+    };
+    if(!data.name || !data.phone || !data.email || !data.hub || !data.city){
+      document.getElementById("rMsg").innerHTML=`<div class="msg msg-danger">All fields are required.</div>`; return;
+    }
+    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)){ document.getElementById("rMsg").innerHTML=`<div class="msg msg-danger">Enter a valid email address (e.g. name@company.com).</div>`; return; }
+    if(!/^\d{7,15}$/.test(data.phone.replace(/[\s\-+]/g,""))){ document.getElementById("rMsg").innerHTML=`<div class="msg msg-danger">Enter a valid mobile number.</div>`; return; }
+    if(!/^\d{4}$/.test(pin)){ document.getElementById("rMsg").innerHTML=`<div class="msg msg-danger">PIN must be exactly 4 digits.</div>`; return; }
+    try{
+      await db.doc("registrations/"+viewerId).set(data);
+      state={view:"pending", reg:data}; render();
+    }catch(e){ document.getElementById("rMsg").innerHTML=`<div class="msg msg-danger">Could not submit. Please try again.</div>`; }
+  };
+}
+
+function renderPending(){
+  crumbSub.textContent = "Awaiting approval";
+  const r = state.reg;
+  app.innerHTML = `<div class="card-narrow">
+    <div class="msg msg-warn">⏳ Your registration is pending admin approval. You'll be able to log in with the PIN you set once an admin approves your account.</div>
+    <p><b>Name:</b> ${escapeHtml(r.name)}<br><b>Mobile:</b> ${escapeHtml(r.phone)}<br><b>Email:</b> ${escapeHtml(r.email)}<br>
+    <b>Hub/DC/FC:</b> ${escapeHtml(r.hub)}<br><b>City:</b> ${escapeHtml(r.city)}<br><b>Role requested:</b> ${escapeHtml(r.role)}</p>
+    <button class="btn" id="editReg">Edit details</button>
+  </div>`;
+  document.getElementById("editReg").onclick = ()=>renderRegister(r);
+}
+
+function renderRejected(){
+  crumbSub.textContent = "Registration not approved";
+  const r = state.reg;
+  app.innerHTML = `<div class="card-narrow">
+    <div class="msg msg-danger">❌ Your registration was not approved.${r.note?" Reason: "+escapeHtml(r.note):""}</div>
+    <button class="btn btn-primary" id="editReg">Edit & resubmit</button>
+  </div>`;
+  document.getElementById("editReg").onclick = ()=>renderRegister(r);
+}
+
+function renderRevoked(){
+  crumbSub.textContent = "Access revoked";
+  const r = state.reg||{};
+  app.innerHTML = `<div class="card-narrow">
+    <div class="msg msg-danger">🚫 Your training access was revoked by an admin. Contact your admin, or resubmit your details for review.</div>
+    <button class="btn btn-primary" id="editReg">Edit & resubmit</button>
+  </div>`;
+  document.getElementById("editReg").onclick = ()=>renderRegister(r);
+}
+
+// ---------------- STAFF VIEW ----------------
+function contentIcon(t){ return t==="ppt"?"📊": t==="video"?"🎬": t==="doc"?"📄":"🔗"; }
+
+let currentContentDocs = [];  // [{id, data}] for the persona currently on screen
+let currentProgress = {};     // {contentId: true} completed-by-this-user map
+
+async function renderPersona(){
+  const p = state.persona;
+  const roles = state.roles || [p];
+  crumbSub.textContent = `Signed in as ${state.profile?.name||""} · Role: ${p}${state.kiosk?" · 🔑 kiosk login":""}`;
+  let switcher = "";
+  if(roles.length>1){
+    switcher = `<div class="top-actions" style="margin-bottom:6px">` +
+      roles.map(r=>`<button class="btn btn-sm${r===p?" btn-primary":""}" data-switch="${r}">${ICONS[r]||"🎓"} ${r}</button>`).join("") +
+      `</div>`;
+  }
+  app.innerHTML = `${switcher}<div class="row"><div class="section-title" style="margin:0">${ICONS[p]||"🎓"} ${p} — Training Content</div>
+  <div class="top-actions">
+    <button class="btn btn-primary" id="toAssess" disabled>📝 Take Assessment</button>
+    <button class="btn btn-sm" id="wrongRole">${state.kiosk?"Not you? Logout":"Wrong role? Request change"}</button>
+  </div></div>
+  <div id="progressNote" class="msg msg-warn hidden"></div>
+  <div id="contentList">Loading…</div>`;
+  document.querySelectorAll("[data-switch]").forEach(b=> b.onclick = ()=>{ state.persona = b.dataset.switch; render(); });
+  document.getElementById("wrongRole").onclick = ()=> state.kiosk ? logout() : renderRegister(state.profile);
+  await loadContentAndProgress(p);
+}
+
+async function loadContentAndProgress(p){
+  const list = document.getElementById("contentList");
+  try{
+    const snap = await db.collection("content").where("persona","==",p).orderBy("createdAt","asc").get();
+    currentContentDocs = snap.docs.map(d=>({id:d.id, data:d.data()}));
+  }catch(e){ list.innerHTML = `<div class="empty">Could not load content.</div>`; return; }
+  try{
+    const progSnap = await db.doc("progress/"+slug(p)+"_"+currentUid()).get();
+    currentProgress = (progSnap.exists && progSnap.data().completed) || {};
+  }catch(e){ currentProgress = {}; }
+  renderContentListAndAssessButton(p);
+}
+
+// Redraws the content list + completion tags, and enables "Take Assessment"
+// only once every content item for this persona has been marked complete.
+function renderContentListAndAssessButton(p){
+  const list = document.getElementById("contentList");
+  const assessBtn = document.getElementById("toAssess");
+  const note = document.getElementById("progressNote");
+  if(currentContentDocs.length===0){
+    list.innerHTML = `<div class="empty">No training content added yet for ${p}.</div>`;
+    assessBtn.disabled = false;
+    assessBtn.onclick = ()=>{ state.view="assessment"; render(); };
+    note.classList.add("hidden");
+    return;
+  }
+  list.innerHTML = "";
+  let doneCount = 0;
+  currentContentDocs.forEach(({id,data:c})=>{
+    const done = !!currentProgress[id];
+    if(done) doneCount++;
+    const el = document.createElement("div");
+    el.className="content-card";
+    el.innerHTML = `<span class="tag">${contentIcon(c.type)} ${(c.type||"link").toUpperCase()}</span>
+    ${done ? '<span class="tag" style="background:#e6f6ec;color:var(--ok)">✅ Completed</span>' : ""}
+    <h3 style="margin:4px 0">${escapeHtml(c.title||"Untitled")}</h3>
+    <p style="color:var(--muted);font-size:13px;margin:4px 0">${escapeHtml(c.description||"")}</p>
+    <button class="btn btn-primary btn-sm" data-view>${done ? "▶ View again" : "▶ View full screen"}</button>`;
+    el.querySelector("[data-view]").onclick = ()=> openContentViewer(p, id, c);
+    list.appendChild(el);
+  });
+  const allDone = doneCount>=currentContentDocs.length;
+  assessBtn.disabled = !allDone;
+  assessBtn.onclick = allDone ? (()=>{ state.view="assessment"; render(); }) : null;
+  if(allDone){
+    note.classList.add("hidden");
+  } else {
+    note.classList.remove("hidden");
+    note.textContent = `Complete all training content to unlock the assessment (${doneCount}/${currentContentDocs.length} done).`;
+  }
+}
+
+// Everything (video, ppt, doc, link) opens full-screen over the dashboard —
+// the person never navigates to another page or tab to watch/read it.
+// Completion is tracked per user per content item:
+//  - video: gated on actual accumulated PLAY time (pauses don't count,
+//    and seek-ahead jumps aren't counted as watched) reaching the
+//    admin-set required duration for that video
+//  - ppt/doc/link: no reliable "finished reading" signal exists for an
+//    embedded/cross-origin viewer, so a short mandatory dwell timer gates
+//    a "Mark as completed" button — it can't be clicked the instant the
+//    item is opened.
+function openContentViewer(persona, contentId, c){
+  const already = !!currentProgress[contentId];
+  const isVideo = c.type==="video";
+  const overlay = document.createElement("div");
+  overlay.className = "viewer-overlay";
+  let mediaHtml;
+  if(isVideo){
+    mediaHtml = `<video id="viewerVideo" controls autoplay playsinline style="width:100%;height:100%;object-fit:contain;background:#000" src="${escapeAttr(c.url||"")}"></video>`;
+  } else if(c.type==="ppt" || c.type==="doc"){
+    const embedUrl = "https://view.officeapps.live.com/op/embed.aspx?src=" + encodeURIComponent(c.url||"");
+    mediaHtml = `<iframe src="${escapeAttr(embedUrl)}" style="width:100%;height:100%;border:none;background:#fff" allowfullscreen></iframe>`;
+  } else {
+    mediaHtml = `<iframe src="${escapeAttr(c.url||"")}" style="width:100%;height:100%;border:none;background:#fff"></iframe>`;
+  }
+  overlay.innerHTML = `
+    <div class="viewer-header">
+      <div>
+        <div class="vh-title">${escapeHtml(c.title||"Untitled")}</div>
+        <div class="vh-desc">${escapeHtml(c.description||"")}</div>
+      </div>
+      <div class="top-actions">
+        <button class="btn btn-sm" id="markDoneBtn" disabled>${already ? "✅ Completed" : "⏳ Wait…"}</button>
+        <button class="btn btn-sm" id="closeViewer">✕ Close</button>
+      </div>
+    </div>
+    <div class="viewer-media">${mediaHtml}</div>`;
+  document.body.appendChild(overlay);
+  document.body.style.overflow = "hidden";
+  const btn = document.getElementById("markDoneBtn");
+
+  if(!already){
+    if(isVideo) setupVideoGate(overlay, persona, contentId, c, btn);
+    else setupDwellGate(overlay, btn, ()=> markContentComplete(persona, contentId));
+  }
+
+  document.getElementById("closeViewer").onclick = ()=>{
+    if(overlay._timer) clearInterval(overlay._timer);
+    document.body.style.overflow = "";
+    overlay.remove();
+  };
+}
+
+function setupDwellGate(overlay, btn, onDone){
+  let secondsLeft = 8;
+  btn.textContent = `⏳ Wait ${secondsLeft}s…`;
+  overlay._timer = setInterval(()=>{
+    secondsLeft--;
+    if(secondsLeft<=0){
+      clearInterval(overlay._timer);
+      btn.disabled = false;
+      btn.textContent = "✅ Mark as completed";
+      btn.onclick = ()=>{ onDone(); btn.disabled=true; btn.textContent="✅ Completed"; };
+    } else {
+      btn.textContent = `⏳ Wait ${secondsLeft}s…`;
+    }
+  }, 1000);
+}
+
+function fmtTime(s){
+  s = Math.max(0, Math.round(s));
+  return Math.floor(s/60)+":"+String(s%60).padStart(2,"0");
+}
+
+function setupVideoGate(overlay, persona, contentId, c, btn){
+  const video = document.getElementById("viewerVideo");
+  const requiredSeconds = c.requiredMinutes ? Math.round(c.requiredMinutes*60) : null;
+  const unlock = ()=>{
+    btn.disabled = false;
+    btn.textContent = "✅ Mark as completed";
+    btn.onclick = ()=>{ markContentComplete(persona, contentId); btn.disabled=true; btn.textContent="✅ Completed"; };
+  };
+
+  if(!requiredSeconds){
+    // Legacy content saved before a required watch-time existed — fall
+    // back to "must play through to the end".
+    btn.textContent = "⏳ Watch to the end…";
+    video.addEventListener("ended", unlock);
+    return;
+  }
+
+  let playedSeconds = 0, lastTime = 0, unlocked = false;
+  const updateLabel = ()=>{ if(!unlocked) btn.textContent = `⏳ Watched ${fmtTime(playedSeconds)} / ${fmtTime(requiredSeconds)}`; };
+  updateLabel();
+
+  video.addEventListener("play", ()=>{ lastTime = video.currentTime; });
+  video.addEventListener("seeking", ()=>{ lastTime = video.currentTime; });
+  video.addEventListener("timeupdate", ()=>{
+    const cur = video.currentTime;
+    // timeupdate only fires during playback, so pausing naturally stops
+    // accumulation; the small delta cap stops a seek-ahead jump from
+    // being counted as watched time.
+    if(!video.paused && !video.seeking){
+      const delta = cur - lastTime;
+      if(delta > 0 && delta < 1.5) playedSeconds += delta;
+    }
+    lastTime = cur;
+    if(!unlocked && playedSeconds >= requiredSeconds){ unlocked = true; unlock(); }
+    else updateLabel();
+  });
+  video.addEventListener("ended", ()=>{ if(!unlocked){ unlocked = true; unlock(); } });
+}
+
+async function markContentComplete(persona, contentId){
+  const uid = currentUid();
+  const ref = db.doc("progress/"+slug(persona)+"_"+uid);
+  try{
+    const snap = await ref.get();
+    const completed = (snap.exists && snap.data().completed) || {};
+    if(!completed[contentId]){
+      completed[contentId] = true;
+      await ref.set({persona, uid, completed, updatedAt:Date.now()});
+    }
+    currentProgress = completed;
+    renderContentListAndAssessButton(persona);
+    showToast("Marked complete ✅");
+  }catch(e){ showToast("Could not save progress."); }
+}
+
+async function renderAssessment(){
+  const p = state.persona;
+  crumbSub.textContent = `Assessment: ${p}`;
+  app.innerHTML = `<div class="section-title">📝 ${p} — Assessment</div><div id="assessBody">Loading…</div>`;
+  const body = document.getElementById("assessBody");
+  try{
+    const docSnap = await db.doc("assessments/"+slug(p)).get();
+    const questions = (docSnap.exists && docSnap.data().questions) || [];
+    if(questions.length===0){ body.innerHTML = `<div class="empty">No assessment has been set up for ${p} yet.</div>`; return; }
+    let subSnap = await db.doc("submissions/"+slug(p)+"_"+currentUid()).get();
+    if(subSnap.exists){
+      body.innerHTML = `<div class="msg msg-ok">✅ You already submitted this assessment on ${new Date(subSnap.data().submittedAt).toLocaleString()}.</div>
+      <button class="btn" id="resub">Submit again</button>`;
+      document.getElementById("resub").onclick = ()=>drawForm(questions, body, p, subSnap.data().answers);
+      return;
+    }
+    drawForm(questions, body, p, {});
+  }catch(e){ body.innerHTML = `<div class="empty">Could not load assessment.</div>`; }
+}
+
+function drawForm(questions, body, p, prior){
+  body.innerHTML = `<form id="assessForm"></form>`;
+  const form = document.getElementById("assessForm");
+  questions.forEach(q=>{
+    const w = document.createElement("div");
+    w.className="q-block";
+    w.innerHTML = `<label>${escapeHtml(q.text)}</label>
+    <textarea class="field" rows="2" data-qid="${q.id}">${escapeHtml(prior[q.id]||"")}</textarea>`;
+    form.appendChild(w);
+  });
+  const submit = document.createElement("button");
+  submit.type="button"; submit.className="btn btn-primary"; submit.textContent="Submit Assessment";
+  submit.onclick = async ()=>{
+    const answers = {};
+    form.querySelectorAll("textarea").forEach(t=> answers[t.dataset.qid]=t.value);
+    try{
+      await db.doc("submissions/"+slug(p)+"_"+currentUid()).set({persona:p, uid:currentUid(), answers, submittedAt:Date.now()});
+      body.innerHTML = `<div class="msg msg-ok">✅ Assessment submitted. Thank you!</div>`;
+    }catch(e){ showToast("Could not submit."); }
+  };
+  form.appendChild(submit);
+}
+
+function escapeHtml(s){ return (s==null?"":String(s)).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function escapeAttr(s){ return escapeHtml(s); }
+
+init();
+</script>
+</body>
+</html>
