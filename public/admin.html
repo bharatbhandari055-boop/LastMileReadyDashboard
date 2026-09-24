@@ -470,6 +470,7 @@ function openContentForm(doc){
   <input class="field" type="file" id="cFile">
   <div id="cDurationWrap" class="hidden">
     <label>Required watch time before staff can mark this video complete (minutes) *</label>
+    <p style="font-size:11px;color:var(--muted);margin:2px 0 6px">seconds ÷ 60 = minutes (e.g. 24 sec ÷ 60 = 0.4)</p>
     <input class="field" id="cDuration" type="number" min="0.5" step="0.5" value="${c.requiredMinutes||""}">
     <p style="font-size:11px;color:var(--muted)">Staff must accumulate this much actual playing time — pauses and seek-ahead don't count toward it — before "Mark as completed" becomes clickable for them.</p>
   </div>
