@@ -57,6 +57,7 @@ th,td{border-bottom:1px solid var(--border);padding:6px;text-align:left;}
     <div class="sub" id="crumbSub">Loading…</div>
   </div>
   <div class="top-actions">
+    <button class="btn hidden" id="exportCsvBtn">⬇ Export CSV</button>
     <button class="btn hidden" id="logoutBtn">🔓 Log out</button>
   </div>
 </header>
@@ -69,6 +70,7 @@ const slug = p => p.replace(/[^a-zA-Z0-9]/g,"_");
 const app = document.getElementById("app");
 const crumbSub = document.getElementById("crumbSub");
 const logoutBtn = document.getElementById("logoutBtn");
+const exportCsvBtn = document.getElementById("exportCsvBtn");
 
 let adminSession = null; // {token, username}
 try{ const saved = sessionStorage.getItem("adminSession"); if(saved) adminSession = JSON.parse(saved); }catch(e){}
@@ -124,6 +126,18 @@ async function apiUpload(path, formData){
 
 async function init(){
   logoutBtn.onclick = ()=>{ adminSession=null; sessionStorage.removeItem("adminSession"); goHome(); };
+  exportCsvBtn.onclick = async ()=>{
+    try{
+      const res = await fetch(API+"/api/admin/export-csv", { headers: { "Authorization": "Bearer "+adminSession.token } });
+      if(!res.ok) throw new Error("failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = "lastmile_ready_users.csv";
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    }catch(e){ showToast("CSV export failed."); }
+  };
   goHome();
 }
 
@@ -138,12 +152,14 @@ async function goHome(){
     return render();
   }
   logoutBtn.classList.remove("hidden");
+  exportCsvBtn.classList.remove("hidden");
   state = { view:"admin", persona: state.persona || PERSONAS[0] };
   render();
 }
 
 function render(){
   logoutBtn.classList.toggle("hidden", !adminSession);
+  exportCsvBtn.classList.toggle("hidden", !adminSession);
   if(state.view==="loading" || state.view==="checkingSetup"){ crumbSub.textContent="Loading…"; app.innerHTML="Loading…"; return; }
   if(state.view==="setup") return renderSetup();
   if(state.view==="login") return renderAdminLogin();
@@ -210,11 +226,14 @@ async function renderAdmin(){
   <div id="adminAllUsers">Loading…</div>
   <div class="section-title">Admin Accounts</div>
   <div id="adminAccounts">Loading…</div>
+  <div class="section-title">Assign Content to Users</div>
+  <div id="assignPanel">Loading…</div>
   <div class="grid" id="adminTabs"></div>
   <div id="adminBody"></div>`;
   loadAdminRegs();
   loadAllUsers();
   loadAdminAccounts();
+  renderAssignPanel();
   const tabs = document.getElementById("adminTabs");
   PERSONAS.forEach(p=>{
     const b = document.createElement("button");
@@ -397,6 +416,113 @@ async function loadAllUsers(){
       }catch(e){ showToast("Revoke failed."); }
     });
     el.appendChild(row);
+  });
+}
+
+// ---------------- ASSIGN CONTENT TO USERS ----------------
+let cachedAsgUsers = [];
+let assignSelectedContent = new Set();
+let assignSelectedUsers = new Set();
+
+async function renderAssignPanel(){
+  const el = document.getElementById("assignPanel");
+  el.innerHTML = `<div class="content-card">
+    <label>Persona</label>
+    <select class="field" id="asgPersona"></select>
+    <label>Content to assign (select one or more)</label>
+    <div id="asgContentList" style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:8px">Loading…</div>
+    <label>Search users by name or phone</label>
+    <input class="field" id="asgUserSearch" placeholder="Type to filter…">
+    <div id="asgUserList" style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:8px">Loading…</div>
+    <label>Completion deadline (optional — leave blank for no deadline)</label>
+    <input class="field" id="asgDueDate" type="date">
+    <button class="btn btn-primary btn-sm" id="asgSubmit" style="margin-top:6px">📌 Assign</button>
+    <div id="asgMsg"></div>
+  </div>
+  <div class="content-card">
+    <label>Or bulk-assign via spreadsheet upload (.xlsx or .csv)</label>
+    <p style="font-size:11px;color:var(--muted);margin:-2px 0 6px">Columns: <b>User Name</b>, <b>Phone</b>, <b>Topic / Module</b>, <b>Completion Date</b> (optional — blank means no deadline). Phone matches the user; Topic/Module is matched against that user's assigned role(s).</p>
+    <input class="field" type="file" id="asgBulkFile" accept=".xlsx,.xls,.csv">
+    <button class="btn btn-sm" id="asgBulkSubmit">⬆ Upload & Assign</button>
+    <div id="asgBulkResult"></div>
+  </div>`;
+
+  const personaSel = document.getElementById("asgPersona");
+  PERSONAS.forEach(p=>{ const o=document.createElement("option"); o.value=p; o.textContent=p; personaSel.appendChild(o); });
+  personaSel.onchange = loadAsgContent;
+  await loadAsgContent();
+
+  try{ cachedAsgUsers = await api("/api/admin/users"); }catch(e){ cachedAsgUsers = []; }
+  renderAsgUserList("");
+  document.getElementById("asgUserSearch").oninput = (e)=> renderAsgUserList(e.target.value);
+
+  document.getElementById("asgSubmit").onclick = async ()=>{
+    const msg = document.getElementById("asgMsg");
+    if(assignSelectedContent.size===0 || assignSelectedUsers.size===0){ msg.innerHTML=`<div class="msg msg-danger">Select at least one content item and one user.</div>`; return; }
+    const dueDateVal = document.getElementById("asgDueDate").value;
+    const dueDate = dueDateVal ? new Date(dueDateVal+"T23:59:59").getTime() : null;
+    try{
+      const result = await api("/api/admin/assign", {method:"POST", body: JSON.stringify({
+        contentIds: Array.from(assignSelectedContent),
+        uids: Array.from(assignSelectedUsers),
+        dueDate
+      })});
+      msg.innerHTML = `<div class="msg msg-ok">Assigned to ${result.assignedUsers.length} user(s): ${result.assignedUsers.map(u=>escapeHtml(u.name)).join(", ")}.</div>`;
+      assignSelectedContent.clear(); assignSelectedUsers.clear();
+      loadAsgContent(); renderAsgUserList(document.getElementById("asgUserSearch").value);
+    }catch(e){ msg.innerHTML=`<div class="msg msg-danger">Assignment failed.</div>`; }
+  };
+
+  document.getElementById("asgBulkSubmit").onclick = async ()=>{
+    const fileInput = document.getElementById("asgBulkFile");
+    const resEl = document.getElementById("asgBulkResult");
+    if(!fileInput.files[0]){ showToast("Choose a file first."); return; }
+    const fd = new FormData(); fd.append("file", fileInput.files[0]);
+    resEl.innerHTML = `<div class="msg">Processing…</div>`;
+    try{
+      const result = await apiUpload("/api/admin/assign-bulk-upload", fd);
+      let html = `<div class="msg msg-ok">Processed ${result.total} row(s) — assigned ${result.assigned}, skipped ${result.skipped.length}.</div>`;
+      if(result.skipped.length>0){
+        html += `<table><tr><th>Row</th><th>Name</th><th>Phone</th><th>Topic</th><th>Reason</th></tr>` +
+          result.skipped.map(s=>`<tr><td>${s.row}</td><td>${escapeHtml(s.name)}</td><td>${escapeHtml(s.phone)}</td><td>${escapeHtml(s.topic)}</td><td>${escapeHtml(s.reason)}</td></tr>`).join("") +
+          `</table>`;
+      }
+      resEl.innerHTML = html;
+    }catch(e){ resEl.innerHTML = `<div class="msg msg-danger">Upload failed.</div>`; }
+  };
+}
+
+async function loadAsgContent(){
+  const persona = document.getElementById("asgPersona").value;
+  const listEl = document.getElementById("asgContentList");
+  listEl.innerHTML = "Loading…";
+  let rows;
+  try{ rows = await api("/api/admin/content?persona="+encodeURIComponent(persona)); }
+  catch(e){ listEl.innerHTML = `<div class="empty">Could not load content.</div>`; return; }
+  if(rows.length===0){ listEl.innerHTML = `<div class="empty">No content for ${escapeHtml(persona)} yet.</div>`; return; }
+  listEl.innerHTML = "";
+  rows.forEach(({id,data:c})=>{
+    const row = document.createElement("label");
+    row.style.cssText = "display:flex;align-items:center;gap:6px;font-size:13px;margin:4px 0";
+    row.innerHTML = `<input type="checkbox" ${assignSelectedContent.has(id)?"checked":""}> <b>${escapeHtml(c.title)}</b> <span class="pill">${escapeHtml(c.topic||"General")}</span>`;
+    row.querySelector("input").onchange = (e)=>{ if(e.target.checked) assignSelectedContent.add(id); else assignSelectedContent.delete(id); };
+    listEl.appendChild(row);
+  });
+}
+
+function renderAsgUserList(filterText){
+  const listEl = document.getElementById("asgUserList");
+  if(!listEl) return;
+  const q = (filterText||"").trim().toLowerCase();
+  const filtered = cachedAsgUsers.filter(({data:p})=> !q || (p.name||"").toLowerCase().includes(q) || (p.phone||"").toLowerCase().includes(q));
+  if(filtered.length===0){ listEl.innerHTML = `<div class="empty">No matching users.</div>`; return; }
+  listEl.innerHTML = "";
+  filtered.forEach(({id,data:p})=>{
+    const row = document.createElement("label");
+    row.style.cssText = "display:flex;align-items:center;gap:6px;font-size:13px;margin:4px 0";
+    row.innerHTML = `<input type="checkbox" ${assignSelectedUsers.has(id)?"checked":""}> <b>${escapeHtml(p.name)}</b> <span style="color:var(--muted)">${escapeHtml(p.phone)} · ${escapeHtml((p.roles||[]).join(", "))}</span>`;
+    row.querySelector("input").onchange = (e)=>{ if(e.target.checked) assignSelectedUsers.add(id); else assignSelectedUsers.delete(id); };
+    listEl.appendChild(row);
   });
 }
 
