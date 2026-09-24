@@ -309,26 +309,120 @@ let currentContentDocs = [];  // [{id, data}] for the persona currently on scree
 let currentProgress = {};     // {contentId: true} completed-by-this-user map
 
 async function renderPersona(){
-  const p = state.persona;
-  const roles = state.roles || [p];
-  crumbSub.textContent = `Signed in as ${state.profile?.name||""} · Role: ${p}${state.kiosk?" · 🔑 kiosk login":""}`;
-  let switcher = "";
-  if(roles.length>1){
-    switcher = `<div class="top-actions" style="margin-bottom:6px">` +
-      roles.map(r=>`<button class="btn btn-sm${r===p?" btn-primary":""}" data-switch="${r}">${ICONS[r]||"🎓"} ${r}</button>`).join("") +
-      `</div>`;
+  const roles = state.roles || [state.persona];
+
+  // 2+ assigned roles: no tab switcher — show everything the person is
+  // responsible for in one scrollable list, split into Pending/Completed.
+  if(roles.length > 1){
+    state.multi = true;
+    return renderMultiPersona(roles);
   }
-  app.innerHTML = `${switcher}<div class="row"><div class="section-title" style="margin:0">${ICONS[p]||"🎓"} ${p} — Training Content</div>
+
+  state.multi = false;
+  const p = state.persona;
+  crumbSub.textContent = `Signed in as ${state.profile?.name||""} · Role: ${p}${state.kiosk?" · 🔑 kiosk login":""}`;
+  app.innerHTML = `<div class="row"><div class="section-title" style="margin:0">${ICONS[p]||"🎓"} ${p} — Training Content</div>
   <div class="top-actions">
     <button class="btn btn-sm" id="wrongRole">${state.kiosk?"Not you? Logout":"Wrong role? Request change"}</button>
   </div></div>
   <p style="color:var(--muted);font-size:12px;margin-top:-4px">Content is grouped by module below. Finish everything in a module to unlock its assessment.</p>
   <div id="topicGroups">Loading…</div>`;
-  document.querySelectorAll("[data-switch]").forEach(b=> b.onclick = ()=>{ state.persona = b.dataset.switch; render(); });
   document.getElementById("wrongRole").onclick = ()=> state.kiosk ? logout() : renderRegister(state.profile);
   await loadContentAndProgress(p);
 }
 
+// ---- Multi-role: merged view, grouped Pending / Completed ----
+let multiGroups = []; // [{persona, topic, items:[{id,data,done}], allDone}]
+
+async function renderMultiPersona(roles){
+  crumbSub.textContent = `Signed in as ${state.profile?.name||""} · Roles: ${roles.join(", ")}${state.kiosk?" · 🔑 kiosk login":""}`;
+  app.innerHTML = `<div class="row"><div class="section-title" style="margin:0">🎓 Training Content</div>
+  <div class="top-actions">
+    <button class="btn btn-sm" id="wrongRole">${state.kiosk?"Not you? Logout":"Wrong role? Request change"}</button>
+  </div></div>
+  <p style="color:var(--muted);font-size:12px;margin-top:-4px">You're assigned multiple roles (${roles.map(r=>escapeHtml(r)).join(", ")}) — everything is shown below, split into Pending and Completed.</p>
+  <div id="multiGroups">Loading…</div>`;
+  document.getElementById("wrongRole").onclick = ()=> state.kiosk ? logout() : renderRegister(state.profile);
+  await loadMultiPersonaContent(roles);
+}
+
+async function loadMultiPersonaContent(roles){
+  const container = document.getElementById("multiGroups");
+  multiGroups = [];
+  for(const p of roles){
+    let docs = [];
+    try{ docs = await api("/api/content?persona="+encodeURIComponent(p)); }catch(e){}
+    let completedMap = {};
+    try{
+      const progJson = await api("/api/progress?persona="+encodeURIComponent(p)+"&uid="+encodeURIComponent(currentUid()));
+      completedMap = progJson.completed || {};
+    }catch(e){}
+    groupByTopic(docs).forEach((items, topic)=>{
+      const withStatus = items.map(({id,data:c})=>({id, data:c, done: !!completedMap[id]}));
+      multiGroups.push({ persona:p, topic, items:withStatus, allDone: withStatus.length>0 && withStatus.every(i=>i.done) });
+    });
+  }
+  renderMultiGroups();
+}
+
+function renderMultiGroups(){
+  const container = document.getElementById("multiGroups");
+  if(multiGroups.length===0){ container.innerHTML = `<div class="empty">No training content added yet for your assigned roles.</div>`; return; }
+  const pending = multiGroups.filter(g=>!g.allDone);
+  const completed = multiGroups.filter(g=>g.allDone);
+  container.innerHTML = "";
+
+  const pendingHeader = document.createElement("div");
+  pendingHeader.className = "section-title";
+  pendingHeader.style.marginTop = "6px";
+  pendingHeader.textContent = "⏳ Pending";
+  container.appendChild(pendingHeader);
+  if(pending.length===0){
+    const e = document.createElement("div"); e.className="empty"; e.textContent="Nothing pending — you're all caught up 🎉";
+    container.appendChild(e);
+  } else {
+    pending.forEach(g=> container.appendChild(renderGroupCard(g)));
+  }
+
+  const completedHeader = document.createElement("div");
+  completedHeader.className = "section-title";
+  completedHeader.style.marginTop = "24px";
+  completedHeader.textContent = "✅ Completed";
+  container.appendChild(completedHeader);
+  if(completed.length===0){
+    const e = document.createElement("div"); e.className="empty"; e.textContent="Nothing completed yet.";
+    container.appendChild(e);
+  } else {
+    completed.forEach(g=> container.appendChild(renderGroupCard(g)));
+  }
+}
+function renderGroupCard(g){
+  const section = document.createElement("div");
+  section.style.marginBottom = "18px";
+  const doneCount = g.items.filter(i=>i.done).length;
+  let cardsHtml = "";
+  g.items.forEach(({id,data:c,done})=>{
+    cardsHtml += `<div class="content-card" data-content-id="${escapeAttr(id)}">
+      <span class="tag">${contentIcon(c.type)} ${(c.type||"link").toUpperCase()}</span>
+      ${done ? '<span class="tag" style="background:#e6f6ec;color:var(--ok)">✅ Completed</span>' : ""}
+      <h3 style="margin:4px 0">${escapeHtml(c.title||"Untitled")}</h3>
+      <p style="color:var(--muted);font-size:13px;margin:4px 0">${escapeHtml(c.description||"")}</p>
+      <button class="btn btn-primary btn-sm" data-view>${done ? "▶ View again" : "▶ View full screen"}</button>
+    </div>`;
+  });
+  section.innerHTML = `<div class="row" style="align-items:center">
+    <div style="font-size:13px;font-weight:600">${ICONS[g.persona]||"🎓"} ${escapeHtml(g.persona)} — 📘 ${escapeHtml(g.topic)}</div>
+    <button class="btn btn-primary btn-sm" data-group-assess ${g.allDone?"":"disabled"}>📝 Take Assessment</button>
+  </div>
+  ${g.allDone ? "" : `<div class="msg msg-warn" style="margin-top:6px">Complete all content in this module to unlock its assessment (${doneCount}/${g.items.length} done).</div>`}
+  ${cardsHtml}`;
+  g.items.forEach(({id,data:c})=>{
+    section.querySelector(`[data-content-id="${CSS.escape(id)}"] [data-view]`).onclick = ()=> openContentViewer(g.persona, id, c);
+  });
+  const assessBtn = section.querySelector("[data-group-assess]");
+  assessBtn.onclick = g.allDone ? (()=>{ state.persona=g.persona; state.view="assessment"; state.topic=g.topic; render(); }) : null;
+  return section;
+}
 async function loadContentAndProgress(p){
   const container = document.getElementById("topicGroups");
   try{
@@ -340,7 +434,6 @@ async function loadContentAndProgress(p){
   }catch(e){ currentProgress = {}; }
   renderTopicGroups(p);
 }
-
 // Groups the persona's content by its "topic" (the module name set at
 // upload time). Each group gets its own progress note + "Take Assessment"
 // button, which only unlocks once every content item *in that group* is
@@ -448,12 +541,12 @@ function openContentViewer(persona, contentId, c){
     else setupDwellGate(overlay, btn, ()=> markContentComplete(persona, contentId));
   }
 
-  document.getElementById("closeViewer").onclick = ()=>{
+  overlay._doClose = ()=>{
     if(overlay._timer) clearInterval(overlay._timer);
     document.body.style.overflow = "";
     overlay.remove();
   };
-}
+  document.getElementById("closeViewer").onclick = overlay._doClose;
 
 function setupDwellGate(overlay, btn, onDone){
   let secondsLeft = 8;
@@ -464,40 +557,35 @@ function setupDwellGate(overlay, btn, onDone){
       clearInterval(overlay._timer);
       btn.disabled = false;
       btn.textContent = "✅ Mark as completed";
-      btn.onclick = ()=>{ onDone(); btn.disabled=true; btn.textContent="✅ Completed"; };
+      btn.onclick = ()=>{ onDone(); overlay._doClose(); };
     } else {
       btn.textContent = `⏳ Wait ${secondsLeft}s…`;
     }
   }, 1000);
 }
-
 function fmtTime(s){
   s = Math.max(0, Math.round(s));
   return Math.floor(s/60)+":"+String(s%60).padStart(2,"0");
 }
-
 function setupVideoGate(overlay, persona, contentId, c, btn){
   const video = document.getElementById("viewerVideo");
   const requiredSeconds = c.requiredMinutes ? Math.round(c.requiredMinutes*60) : null;
   const unlock = ()=>{
     btn.disabled = false;
     btn.textContent = "✅ Mark as completed";
-    btn.onclick = ()=>{ markContentComplete(persona, contentId); btn.disabled=true; btn.textContent="✅ Completed"; };
+    btn.onclick = ()=>{ markContentComplete(persona, contentId); overlay._doClose(); };
   };
-
-  if(!requiredSeconds){
+if(!requiredSeconds){
     // Legacy content saved before a required watch-time existed — fall
     // back to "must play through to the end".
     btn.textContent = "⏳ Watch to the end…";
     video.addEventListener("ended", unlock);
     return;
   }
-
-  let playedSeconds = 0, lastTime = 0, unlocked = false;
+let playedSeconds = 0, lastTime = 0, unlocked = false;
   const updateLabel = ()=>{ if(!unlocked) btn.textContent = `⏳ Watched ${fmtTime(playedSeconds)} / ${fmtTime(requiredSeconds)}`; };
   updateLabel();
-
-  video.addEventListener("play", ()=>{ lastTime = video.currentTime; });
+ video.addEventListener("play", ()=>{ lastTime = video.currentTime; });
   video.addEventListener("seeking", ()=>{ lastTime = video.currentTime; });
   video.addEventListener("timeupdate", ()=>{
     const cur = video.currentTime;
@@ -519,12 +607,16 @@ async function markContentComplete(persona, contentId){
   const uid = currentUid();
   try{
     const result = await api("/api/progress", {method:"POST", body: JSON.stringify({persona, uid, contentId})});
-    currentProgress = result.completed;
-    renderTopicGroups(persona);
+    if(state.multi){
+      await loadMultiPersonaContent(state.roles);
+    } else {
+      currentProgress = result.completed;
+      renderTopicGroups(persona);
+    }
     showToast("Marked complete ✅");
   }catch(e){ showToast("Could not save progress."); }
 }
-
+}
 async function renderAssessment(){
   const p = state.persona;
   const topic = state.topic || "General";
