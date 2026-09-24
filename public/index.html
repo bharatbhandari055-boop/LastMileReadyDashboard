@@ -532,37 +532,72 @@ function fmtDue(ts){
   return `<span class="pill" style="${overdue?"color:var(--danger);border-color:var(--danger)":""}">${overdue?"⚠ Overdue: ":"Due: "}${new Date(ts).toLocaleDateString()}</span>`;
 }
 
+// Looks up topic-level completion the same way the rest of the dashboard
+// does — based on ALL content in that persona+topic, not just the items
+// assigned to this user — so "Take Assessment" unlocks at exactly the
+// same point everywhere in the app.
+function getTopicCompletion(persona, topic){
+  if(state.multi){
+    const g = multiGroups.find(x=>x.persona===persona && x.topic===topic);
+    if(!g) return null;
+    return { doneCount: g.items.filter(i=>i.done).length, total: g.items.length, allDone: g.allDone };
+  }
+  if(persona !== state.persona) return null;
+  const groups = groupByTopic(currentContentDocs);
+  const items = groups.get(topic) || [];
+  const doneCount = items.filter(({id})=> !!currentProgress[id]).length;
+  return { doneCount, total: items.length, allDone: items.length>0 && doneCount>=items.length };
+}
+
+function groupAssignedByTopic(items){
+  const map = new Map(); // key: persona+"::"+topic
+  items.forEach(item=>{
+    const persona = item.data.persona;
+    const topic = item.data.topic || "General";
+    const key = persona+"::"+topic;
+    if(!map.has(key)) map.set(key, {persona, topic, items:[]});
+    map.get(key).items.push(item);
+  });
+  return map;
+}
+
 function renderAssignedSection(items){
   if(!items || items.length===0) return "";
-  const pending = items.filter(i=>!i.done);
-  const completed = items.filter(i=>i.done);
   let html = `<div class="section-title" style="margin-top:6px">📌 Assigned to You</div>
   <p style="color:var(--muted);font-size:12px;margin-top:-4px">Content specifically assigned to you by an admin, in addition to your regular role-based training.</p>`;
-  if(pending.length>0){
-    html += `<div class="msg msg-warn">${pending.length} assigned item(s) pending.</div>`;
+  const groups = groupAssignedByTopic(items);
+  groups.forEach(({persona, topic, items:groupItems})=>{
+    const pending = groupItems.filter(i=>!i.done);
+    const completed = groupItems.filter(i=>i.done);
+    const comp = getTopicCompletion(persona, topic);
+    const allDone = comp ? comp.allDone : groupItems.every(i=>i.done);
+    html += `<div class="row" style="align-items:center;margin-top:10px">
+      <div style="font-size:13px;font-weight:600">${ICONS[persona]||"🎓"} ${escapeHtml(persona)} — 📘 ${escapeHtml(topic)}</div>
+      <button class="btn btn-primary btn-sm" data-assigned-assess="${escapeAttr(persona)}::${escapeAttr(topic)}" ${allDone?"":"disabled"}>📝 Take Assessment</button>
+    </div>`;
+    if(!allDone && comp){
+      html += `<div class="msg msg-warn" style="margin-top:4px">Complete all content in this module to unlock its assessment (${comp.doneCount}/${comp.total} done).</div>`;
+    } else if(pending.length>0){
+      html += `<div class="msg msg-warn" style="margin-top:4px">${pending.length} assigned item(s) in this module still pending.</div>`;
+    }
     pending.forEach(({id,data:c})=>{
       html += `<div class="content-card" data-assigned-id="${escapeAttr(id)}">
         <span class="tag">${contentIcon(c.type)} ${(c.type||"link").toUpperCase()}</span>
-        <span class="pill">${escapeHtml(c.persona)}</span>
         ${c.dueDate ? fmtDue(c.dueDate) : ""}
         <h3 style="margin:4px 0">${escapeHtml(c.title||"Untitled")}</h3>
         <p style="color:var(--muted);font-size:13px;margin:4px 0">${escapeHtml(c.description||"")}</p>
         <button class="btn btn-primary btn-sm" data-view>▶ View full screen</button>
       </div>`;
     });
-  }
-  if(completed.length>0){
-    html += `<div style="font-size:12px;color:var(--muted);margin:10px 0 4px">✅ ${completed.length} assigned item(s) completed</div>`;
     completed.forEach(({id,data:c})=>{
       html += `<div class="content-card" data-assigned-id="${escapeAttr(id)}">
         <span class="tag">${contentIcon(c.type)} ${(c.type||"link").toUpperCase()}</span>
         <span class="tag" style="background:#e6f6ec;color:var(--ok)">✅ Completed</span>
-        <span class="pill">${escapeHtml(c.persona)}</span>
         <h3 style="margin:4px 0">${escapeHtml(c.title||"Untitled")}</h3>
         <button class="btn btn-primary btn-sm" data-view>▶ View again</button>
       </div>`;
     });
-  }
+  });
   return html;
 }
 
@@ -570,6 +605,11 @@ function wireAssignedSection(container, items){
   items.forEach(({id,data:c})=>{
     const card = container.querySelector(`[data-assigned-id="${CSS.escape(id)}"]`);
     if(card) card.querySelector("[data-view]").onclick = ()=> openContentViewer(c.persona, id, c);
+  });
+  container.querySelectorAll("[data-assigned-assess]").forEach(btn=>{
+    if(btn.disabled) return;
+    const [persona, topic] = btn.dataset.assignedAssess.split("::");
+    btn.onclick = ()=>{ state.persona = persona; state.view = "assessment"; state.topic = topic; render(); };
   });
 }
 
