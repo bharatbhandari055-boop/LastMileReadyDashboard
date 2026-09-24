@@ -349,11 +349,18 @@ app.get("/api/admin/questions", async (req, res) => {
 });
 app.post("/api/admin/questions", async (req, res) => {
   try {
-    const { persona, text } = req.body || {};
+    const { persona, text, type, options } = req.body || {};
     if (!persona || !text) return res.status(400).json({ error: "missing_fields" });
+    const q = { id: crypto.randomUUID(), text };
+    if (type === "mcq") {
+      const opts = (Array.isArray(options) ? options : []).map(o => String(o).trim()).filter(Boolean);
+      if (opts.length < 2) return res.status(400).json({ error: "need_at_least_2_options" });
+      q.type = "mcq";
+      q.options = opts;
+    }
     const { data: existing } = await sb.from("assessments").select("*").eq("persona", persona).maybeSingle();
     const qs = (existing && existing.questions) || [];
-    qs.push({ id: crypto.randomUUID(), text });
+    qs.push(q);
     const { error } = await sb.from("assessments").upsert({ persona, questions: qs });
     ok(error);
     res.json({ ok: true });

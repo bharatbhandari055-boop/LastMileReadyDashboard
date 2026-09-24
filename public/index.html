@@ -114,10 +114,18 @@ async function init(){
   goHome();
 }
 
+// True whenever someone is currently identified on screen — via kiosk PIN
+// login, OR via this device's own auto-recognition. Logout needs to work
+// either way, not just for kiosk logins.
+let guestMode = false;
+try{ guestMode = sessionStorage.getItem("guestMode")==="1"; }catch(e){}
+
 function updateAuthBtn(){
   const btn = document.getElementById("authBtn");
-  if(kioskOverride){
-    btn.textContent = "🔓 Logout ("+ (kioskOverride.name||"user") +")";
+  const activeName = kioskOverride ? kioskOverride.name
+    : (!guestMode && state && state.view==="persona" && state.profile ? state.profile.name : null);
+  if(kioskOverride || activeName){
+    btn.textContent = "🔓 Logout" + (activeName ? " ("+activeName+")" : "");
     btn.onclick = logout;
   } else {
     btn.textContent = "🔑 Login";
@@ -126,9 +134,16 @@ function updateAuthBtn(){
 }
 
 function logout(){
-  kioskOverride = null;
-  sessionStorage.removeItem("kioskProfile");
-  updateAuthBtn();
+  if(kioskOverride){
+    kioskOverride = null;
+    sessionStorage.removeItem("kioskProfile");
+  } else {
+    // Signed in via this device's own auto-recognition (not a PIN login) —
+    // log out for just this browser tab/session, without forgetting the
+    // device itself. Closing the tab or logging in again both clear this.
+    guestMode = true;
+    try{ sessionStorage.setItem("guestMode","1"); }catch(e){}
+  }
   goHome();
 }
 
@@ -154,7 +169,8 @@ function renderLogin(){
       const result = await api("/api/staff-login", {method:"POST", body: JSON.stringify({id:idVal, pin})});
       kioskOverride = { id: result.id, name: result.data.name, roles: result.data.roles || (result.data.role?[result.data.role]:[]), profile: result.data };
       sessionStorage.setItem("kioskProfile", JSON.stringify(kioskOverride));
-      updateAuthBtn();
+      guestMode = false;
+      try{ sessionStorage.removeItem("guestMode"); }catch(e){}
       goHome();
     }catch(e){
       if(e.status===404) msg.innerHTML = `<div class="msg msg-danger">No match found. Check your details or ask admin.</div>`;
@@ -166,7 +182,13 @@ function renderLogin(){
 async function goHome(){
   if(kioskOverride){
     state = { view:"persona", persona: kioskOverride.roles[0]||PERSONAS[0], roles: kioskOverride.roles, profile: kioskOverride.profile, kiosk:true };
-    return render();
+    updateAuthBtn(); return render();
+  }
+  if(guestMode){
+    // Logged out of this device's own auto-recognition for now — show the
+    // login/register screen instead of silently signing them back in.
+    state = {view:"login"};
+    updateAuthBtn(); return render();
   }
   try{
     const profJson = await api("/api/profile/"+deviceId);
@@ -174,17 +196,17 @@ async function goHome(){
       const pdata = profJson.data;
       const roles = pdata.roles || (pdata.role ? [pdata.role] : []);
       state = { view:"persona", persona: roles[0]||PERSONAS[0], roles, profile: pdata };
-      return render();
+      updateAuthBtn(); return render();
     }
     const regJson = await api("/api/registration/"+deviceId);
     if(regJson.exists){
       const r = regJson.data;
-      if(r.status==="rejected"){ state={view:"rejected", reg:r}; return render(); }
-      if(r.status==="revoked"){ state={view:"revoked", reg:r}; return render(); }
-      state={view:"pending", reg:r}; return render();
+      if(r.status==="rejected"){ state={view:"rejected", reg:r}; updateAuthBtn(); return render(); }
+      if(r.status==="revoked"){ state={view:"revoked", reg:r}; updateAuthBtn(); return render(); }
+      state={view:"pending", reg:r}; updateAuthBtn(); return render();
     }
-    state={view:"register"}; render();
-  }catch(e){ state={view:"register"}; render(); }
+    state={view:"register"}; updateAuthBtn(); render();
+  }catch(e){ state={view:"register"}; updateAuthBtn(); render(); }
 }
 
 function render(){
@@ -507,15 +529,31 @@ function drawForm(questions, body, p, prior){
   questions.forEach(q=>{
     const w = document.createElement("div");
     w.className="q-block";
-    w.innerHTML = `<label>${escapeHtml(q.text)}</label>
-    <textarea class="field" rows="2" data-qid="${q.id}">${escapeHtml(prior[q.id]||"")}</textarea>`;
+    if(q.type==="mcq" && Array.isArray(q.options)){
+      const priorVal = prior[q.id]||"";
+      w.innerHTML = `<label>${escapeHtml(q.text)}</label>
+      <div data-qid="${q.id}" data-qtype="mcq">
+        ${q.options.map((opt,i)=>`
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text);margin:4px 0">
+            <input type="radio" name="mcq_${q.id}" value="${escapeAttr(opt)}" ${priorVal===opt?"checked":""}>
+            ${escapeHtml(opt)}
+          </label>`).join("")}
+      </div>`;
+    } else {
+      w.innerHTML = `<label>${escapeHtml(q.text)}</label>
+      <textarea class="field" rows="2" data-qid="${q.id}" data-qtype="text">${escapeHtml(prior[q.id]||"")}</textarea>`;
+    }
     form.appendChild(w);
   });
   const submit = document.createElement("button");
   submit.type="button"; submit.className="btn btn-primary"; submit.textContent="Submit Assessment";
   submit.onclick = async ()=>{
     const answers = {};
-    form.querySelectorAll("textarea").forEach(t=> answers[t.dataset.qid]=t.value);
+    form.querySelectorAll("textarea[data-qid]").forEach(t=> answers[t.dataset.qid]=t.value);
+    form.querySelectorAll("[data-qtype=mcq]").forEach(wrap=>{
+      const checked = wrap.querySelector("input[type=radio]:checked");
+      answers[wrap.dataset.qid] = checked ? checked.value : "";
+    });
     try{
       await api("/api/submission", {method:"POST", body: JSON.stringify({persona:p, uid:currentUid(), answers})});
       body.innerHTML = `<div class="msg msg-ok">✅ Assessment submitted. Thank you!</div>`;

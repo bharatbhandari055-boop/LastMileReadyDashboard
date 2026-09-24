@@ -487,7 +487,11 @@ async function loadAdminQuestions(){
   qs.forEach((q,i)=>{
     const row = document.createElement("div");
     row.className="content-card row";
-    row.innerHTML = `<div>${i+1}. ${escapeHtml(q.text)}</div>
+    const isMcq = q.type==="mcq" && Array.isArray(q.options);
+    row.innerHTML = `<div style="flex:1;min-width:200px">
+      <div>${i+1}. ${escapeHtml(q.text)} ${isMcq?'<span class="pill">multiple choice</span>':'<span class="pill">free text</span>'}</div>
+      ${isMcq ? `<div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:6px">${q.options.map(o=>`<span class="tag">${escapeHtml(o)}</span>`).join("")}</div>` : ""}
+    </div>
     <button class="btn btn-sm btn-danger">Remove</button>`;
     row.querySelector("button").onclick = async ()=>{
       try{ await api("/api/admin/questions/"+slug(state.persona)+"/"+q.id, {method:"DELETE"}); loadAdminQuestions(); }
@@ -505,17 +509,47 @@ function openQuestionForm(){
   wrap.id="qFormBox";
   wrap.innerHTML = `<label>New assessment question</label>
   <input class="field" id="qText" placeholder="Enter the question text">
-  <div class="top-actions">
+  <label>Answer type</label>
+  <select class="field" id="qType">
+    <option value="text">Free text (staff type their own answer)</option>
+    <option value="mcq">Multiple choice (staff pick one option)</option>
+  </select>
+  <div id="qOptionsWrap" class="hidden">
+    <label>Options (at least 2)</label>
+    <div id="qOptionsList"></div>
+    <button class="btn btn-sm" id="qAddOption" type="button">＋ Add option</button>
+  </div>
+  <div class="top-actions" style="margin-top:10px">
     <button class="btn btn-primary btn-sm" id="qSave">Add</button>
     <button class="btn btn-sm" id="qCancel">Cancel</button>
   </div>`;
   el.prepend(wrap);
+  const typeSel = wrap.querySelector("#qType");
+  const optsWrap = wrap.querySelector("#qOptionsWrap");
+  const optsList = wrap.querySelector("#qOptionsList");
+  function addOptionInput(val){
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;gap:6px;align-items:center";
+    row.innerHTML = `<input class="field" data-opt style="margin:4px 0" value="${escapeAttr(val||"")}"><button class="btn btn-sm" type="button" data-remove>✕</button>`;
+    row.querySelector("[data-remove]").onclick = ()=>{ if(optsList.children.length>2) row.remove(); else showToast("At least 2 options are required."); };
+    optsList.appendChild(row);
+  }
+  addOptionInput(""); addOptionInput("");
+  typeSel.onchange = ()=> optsWrap.classList.toggle("hidden", typeSel.value!=="mcq");
+  wrap.querySelector("#qAddOption").onclick = ()=> addOptionInput("");
   document.getElementById("qCancel").onclick = ()=>wrap.remove();
   document.getElementById("qSave").onclick = async ()=>{
     const text = document.getElementById("qText").value.trim();
     if(!text){ showToast("Enter a question first."); return; }
+    const type = typeSel.value;
+    const payload = { persona: state.persona, text, type };
+    if(type==="mcq"){
+      const options = Array.from(optsList.querySelectorAll("[data-opt]")).map(i=>i.value.trim()).filter(Boolean);
+      if(options.length<2){ showToast("Enter at least 2 non-empty options."); return; }
+      payload.options = options;
+    }
     try{
-      await api("/api/admin/questions", {method:"POST", body: JSON.stringify({persona: state.persona, text})});
+      await api("/api/admin/questions", {method:"POST", body: JSON.stringify(payload)});
       showToast("Question added.");
       loadAdminQuestions();
     }catch(e){ showToast("Save failed — admin access required."); }
