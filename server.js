@@ -140,16 +140,23 @@ app.get("/api/assessment", async (req, res) => {
     const topic = req.query.topic || "General";
     const { data, error } = await sb.from("assessments").select("*").eq("persona", req.query.persona).eq("topic", topic).maybeSingle();
     ok(error);
-    res.json({ questions: (data && data.questions) || [] });
+    // Staff-facing: never send correctAnswer to the browser, or the
+    // answer key would sit in plain sight in the network tab.
+    const questions = ((data && data.questions) || []).map(stripCorrectAnswer);
+    res.json({ questions });
   } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
 });
+function stripCorrectAnswer(q) {
+  const { correctAnswer, ...rest } = q;
+  return rest;
+}
 app.get("/api/submission", async (req, res) => {
   try {
     const topic = req.query.topic || "General";
     const { data, error } = await sb.from("submissions").select("*").eq("persona", req.query.persona).eq("topic", topic).eq("uid", req.query.uid).maybeSingle();
     ok(error);
     if (!data) return res.json({ exists: false });
-    res.json({ exists: true, data: { persona: data.persona, topic: data.topic, uid: data.uid, answers: data.answers, submittedAt: data.submitted_at } });
+    res.json({ exists: true, data: { persona: data.persona, topic: data.topic, uid: data.uid, answers: data.answers, score: data.score || null, submittedAt: data.submitted_at } });
   } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
 });
 app.post("/api/submission", async (req, res) => {
@@ -157,11 +164,26 @@ app.post("/api/submission", async (req, res) => {
     const { persona, uid, answers } = req.body || {};
     const topic = req.body.topic || "General";
     if (!persona || !uid) return res.status(400).json({ error: "missing_fields" });
-    const { error } = await sb.from("submissions").upsert({ persona, topic, uid, answers: answers || {}, submitted_at: Date.now() });
+    // Grade against the server's own copy of the questions — the client
+    // never sees correctAnswer, so there's nothing for it to fake here.
+    const score = await scoreAnswers(persona, topic, answers || {});
+    const { error } = await sb.from("submissions").upsert({ persona, topic, uid, answers: answers || {}, score, submitted_at: Date.now() });
     ok(error);
-    res.json({ ok: true });
+    res.json({ ok: true, score });
   } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
 });
+// Score covers only mcq questions that have a correctAnswer set — free
+// text isn't auto-gradable. Returns null (no score line shown) if the
+// topic has no scorable questions at all.
+async function scoreAnswers(persona, topic, answers) {
+  const { data } = await sb.from("assessments").select("*").eq("persona", persona).eq("topic", topic).maybeSingle();
+  const questions = (data && data.questions) || [];
+  const mcqs = questions.filter(q => q.type === "mcq" && q.correctAnswer);
+  if (mcqs.length === 0) return null;
+  let correct = 0;
+  mcqs.forEach(q => { if (answers[q.id] === q.correctAnswer) correct++; });
+  return { correct, total: mcqs.length };
+}
 
 // =========================================================
 // ADMIN API
@@ -365,15 +387,18 @@ app.get("/api/admin/questions", async (req, res) => {
 });
 app.post("/api/admin/questions", async (req, res) => {
   try {
-    const { persona, text, type, options } = req.body || {};
+    const { persona, text, type, options, correctAnswer } = req.body || {};
     const topic = req.body.topic || "General";
     if (!persona || !text) return res.status(400).json({ error: "missing_fields" });
     const q = { id: crypto.randomUUID(), text };
     if (type === "mcq") {
       const opts = (Array.isArray(options) ? options : []).map(o => String(o).trim()).filter(Boolean);
       if (opts.length < 2) return res.status(400).json({ error: "need_at_least_2_options" });
+      const correct = String(correctAnswer || "").trim();
+      if (!correct || !opts.includes(correct)) return res.status(400).json({ error: "correct_answer_required" });
       q.type = "mcq";
       q.options = opts;
+      q.correctAnswer = correct;
     }
     const { data: existing } = await sb.from("assessments").select("*").eq("persona", persona).eq("topic", topic).maybeSingle();
     const qs = (existing && existing.questions) || [];
@@ -400,7 +425,7 @@ app.get("/api/admin/submissions", async (req, res) => {
     const topic = req.query.topic || "General";
     const { data, error } = await sb.from("submissions").select("*").eq("persona", req.query.persona).eq("topic", topic).limit(50);
     ok(error);
-    res.json(data.map(s => ({ uid: s.uid, answers: s.answers, submittedAt: s.submitted_at })));
+    res.json(data.map(s => ({ uid: s.uid, answers: s.answers, score: s.score || null, submittedAt: s.submitted_at })));
   } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
 });
 

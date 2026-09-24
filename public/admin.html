@@ -537,7 +537,7 @@ async function loadAdminQuestions(){
     const isMcq = q.type==="mcq" && Array.isArray(q.options);
     row.innerHTML = `<div style="flex:1;min-width:200px">
       <div>${i+1}. ${escapeHtml(q.text)} ${isMcq?'<span class="pill">multiple choice</span>':'<span class="pill">free text</span>'}</div>
-      ${isMcq ? `<div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:6px">${q.options.map(o=>`<span class="tag">${escapeHtml(o)}</span>`).join("")}</div>` : ""}
+      ${isMcq ? `<div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:6px">${q.options.map(o=> o===q.correctAnswer ? `<span class="tag" style="background:#e6f6ec;color:var(--ok)">✅ ${escapeHtml(o)}</span>` : `<span class="tag">${escapeHtml(o)}</span>`).join("")}</div>` : ""}
     </div>
     <button class="btn btn-sm btn-danger">Remove</button>`;
     row.querySelector("button").onclick = async ()=>{
@@ -562,7 +562,7 @@ function openQuestionForm(){
     <option value="mcq">Multiple choice (staff pick one option)</option>
   </select>
   <div id="qOptionsWrap" class="hidden">
-    <label>Options (at least 2)</label>
+    <label>Options (at least 2) — mark the radio next to the correct one</label>
     <div id="qOptionsList"></div>
     <button class="btn btn-sm" id="qAddOption" type="button">＋ Add option</button>
   </div>
@@ -574,16 +574,18 @@ function openQuestionForm(){
   const typeSel = wrap.querySelector("#qType");
   const optsWrap = wrap.querySelector("#qOptionsWrap");
   const optsList = wrap.querySelector("#qOptionsList");
-  function addOptionInput(val){
+  function addOptionInput(val, isCorrect){
     const row = document.createElement("div");
-    row.style.cssText = "display:flex;gap:6px;align-items:center";
-    row.innerHTML = `<input class="field" data-opt style="margin:4px 0" value="${escapeAttr(val||"")}"><button class="btn btn-sm" type="button" data-remove>✕</button>`;
+    row.style.cssText = "display:flex;gap:8px;align-items:center";
+    row.innerHTML = `<input type="radio" name="qCorrectOpt" data-correct title="Mark as the correct answer" ${isCorrect?"checked":""}>
+      <input class="field" data-opt style="margin:4px 0" value="${escapeAttr(val||"")}">
+      <button class="btn btn-sm" type="button" data-remove>✕</button>`;
     row.querySelector("[data-remove]").onclick = ()=>{ if(optsList.children.length>2) row.remove(); else showToast("At least 2 options are required."); };
     optsList.appendChild(row);
   }
-  addOptionInput(""); addOptionInput("");
+  addOptionInput("", true); addOptionInput("", false);
   typeSel.onchange = ()=> optsWrap.classList.toggle("hidden", typeSel.value!=="mcq");
-  wrap.querySelector("#qAddOption").onclick = ()=> addOptionInput("");
+  wrap.querySelector("#qAddOption").onclick = ()=> addOptionInput("", false);
   document.getElementById("qCancel").onclick = ()=>wrap.remove();
   document.getElementById("qSave").onclick = async ()=>{
     const text = document.getElementById("qText").value.trim();
@@ -591,9 +593,17 @@ function openQuestionForm(){
     const type = typeSel.value;
     const payload = { persona: state.persona, topic: state.topic, text, type };
     if(type==="mcq"){
-      const options = Array.from(optsList.querySelectorAll("[data-opt]")).map(i=>i.value.trim()).filter(Boolean);
+      const options = [];
+      let correctAnswer = null;
+      Array.from(optsList.children).forEach(row=>{
+        const val = row.querySelector("[data-opt]").value.trim();
+        const isChecked = row.querySelector("[data-correct]").checked;
+        if(val){ options.push(val); if(isChecked) correctAnswer = val; }
+      });
       if(options.length<2){ showToast("Enter at least 2 non-empty options."); return; }
+      if(!correctAnswer){ showToast("Mark which option is the correct answer."); return; }
       payload.options = options;
+      payload.correctAnswer = correctAnswer;
     }
     try{
       await api("/api/admin/questions", {method:"POST", body: JSON.stringify(payload)});
@@ -613,9 +623,10 @@ async function loadAdminSubs(){
   if(rows.length===0){ el.innerHTML=`<div class="empty">No submissions yet for "${escapeHtml(state.topic)}".</div>`; return; }
   let bodyRows = "";
   rows.forEach(s=>{
-    bodyRows += `<tr><td>${s.uid?s.uid.slice(0,10):"?"}…</td><td>${new Date(s.submittedAt).toLocaleString()}</td><td>${Object.keys(s.answers||{}).length}</td></tr>`;
+    const scoreText = s.score ? `${s.score.correct}/${s.score.total}` : "—";
+    bodyRows += `<tr><td>${s.uid?s.uid.slice(0,10):"?"}…</td><td>${new Date(s.submittedAt).toLocaleString()}</td><td>${Object.keys(s.answers||{}).length}</td><td>${scoreText}</td></tr>`;
   });
-  el.innerHTML = `<table><tr><th>Viewer</th><th>Submitted</th><th>Answers</th></tr>${bodyRows}</table>`;
+  el.innerHTML = `<table><tr><th>Viewer</th><th>Submitted</th><th>Answers</th><th>Score</th></tr>${bodyRows}</table>`;
 }
 
 function escapeHtml(s){ return (s==null?"":String(s)).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }

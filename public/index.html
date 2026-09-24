@@ -537,13 +537,22 @@ async function renderAssessment(){
     if(questions.length===0){ body.innerHTML = `<div class="empty">No assessment has been set up for ${escapeHtml(topic)} yet.</div>`; return; }
     const subJson = await api("/api/submission?persona="+encodeURIComponent(p)+"&topic="+encodeURIComponent(topic)+"&uid="+encodeURIComponent(currentUid()));
     if(subJson.exists){
-      body.innerHTML = `<div class="msg msg-ok">✅ You already submitted this assessment on ${new Date(subJson.data.submittedAt).toLocaleString()}.</div>
+      body.innerHTML = `<div class="msg msg-ok">✅ You already submitted this assessment on ${new Date(subJson.data.submittedAt).toLocaleString()}.${scoreLine(subJson.data.score)}</div>
       <button class="btn" id="resub">Submit again</button>`;
       document.getElementById("resub").onclick = ()=>drawForm(questions, body, p, topic, subJson.data.answers);
       return;
     }
     drawForm(questions, body, p, topic, {});
   }catch(e){ body.innerHTML = `<div class="empty">Could not load assessment.</div>`; }
+}
+
+// Free-text answers aren't auto-gradable, so the score only ever covers
+// the multiple-choice questions — shown as "X/Y correct" once the server
+// has graded the submission (it holds the correct answers, never the
+// browser). No score line is shown if the topic has no MCQ questions.
+function scoreLine(score){
+  if(!score || !score.total) return "";
+  return ` You scored <b>${score.correct}/${score.total}</b> on the multiple-choice questions.`;
 }
 
 function drawForm(questions, body, p, topic, prior){
@@ -578,8 +587,8 @@ function drawForm(questions, body, p, topic, prior){
       answers[wrap.dataset.qid] = checked ? checked.value : "";
     });
     try{
-      await api("/api/submission", {method:"POST", body: JSON.stringify({persona:p, topic, uid:currentUid(), answers})});
-      body.innerHTML = `<div class="msg msg-ok">✅ Assessment submitted. Thank you!</div>`;
+      const result = await api("/api/submission", {method:"POST", body: JSON.stringify({persona:p, topic, uid:currentUid(), answers})});
+      body.innerHTML = `<div class="msg msg-ok">✅ Assessment submitted. Thank you!${scoreLine(result.score)}</div>`;
     }catch(e){ showToast("Could not submit."); }
   };
   form.appendChild(submit);
