@@ -18,6 +18,7 @@ const jwt = require("jsonwebtoken");
 const { createClient } = require("@supabase/supabase-js");
 const path = require("path");
 const crypto = require("crypto");
+const XLSX = require("xlsx");
 
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -48,6 +49,38 @@ function requireAdmin(req, res, next) {
   if (!token) return res.status(401).json({ error: "not_authenticated" });
   try { req.admin = jwt.verify(token, JWT_SECRET); next(); }
   catch (e) { return res.status(401).json({ error: "not_authenticated" }); }
+}
+
+// =========================================================
+// Email (for content-assignment notifications) — NOT WIRED IN YET.
+// Kept here ready to use: once you want assignment emails to actually
+// send, install nodemailer (`npm install nodemailer`), uncomment the
+// require below, set SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS/SMTP_FROM
+// on the server, and call sendAssignmentEmail(...) from the assign
+// endpoints below (the call sites are marked with a comment).
+// =========================================================
+// const nodemailer = require("nodemailer");
+let mailer = null;
+// if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+//   mailer = nodemailer.createTransport({
+//     host: process.env.SMTP_HOST,
+//     port: Number(process.env.SMTP_PORT || 587),
+//     secure: Number(process.env.SMTP_PORT) === 465,
+//     auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+//   });
+// }
+const MAIL_FROM = process.env.SMTP_FROM || process.env.SMTP_USER || "no-reply@lastmileready.app";
+
+async function sendAssignmentEmail(toEmail, name, items) {
+  const list = items.map(c => `- ${c.title} (${c.type})`).join("\n");
+  const subject = "New training content assigned to you — LastMile Ready";
+  const text = `Hi ${name},\n\nYou've been assigned new training content:\n\n${list}\n\nLog in to your LastMile Ready dashboard to view it.\n\n— LastMile Ready`;
+  if (!mailer) {
+    console.log("[email skipped - SMTP not configured] To:", toEmail, "\n", text);
+    return false;
+  }
+  await mailer.sendMail({ from: MAIL_FROM, to: toEmail, subject, text });
+  return true;
 }
 
 // =========================================================
@@ -108,6 +141,24 @@ app.get("/api/content", async (req, res) => {
     const { data, error } = await sb.from("content").select("*").eq("persona", req.query.persona).order("created_at", { ascending: true });
     ok(error);
     res.json(data.map(rowToContent));
+  } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
+});
+
+// Content assigned directly to this user (independent of persona/role),
+// via the admin's "Assign Content to Users" panel or bulk upload.
+app.get("/api/assigned-content", async (req, res) => {
+  try {
+    const uid = req.query.uid;
+    if (!uid) return res.status(400).json({ error: "missing_uid" });
+    const { data: assigns, error: e1 } = await sb.from("assignments").select("*").eq("uid", uid);
+    ok(e1);
+    if (!assigns || assigns.length === 0) return res.json([]);
+    const ids = assigns.map(a => a.content_id);
+    const { data: rows, error: e2 } = await sb.from("content").select("*").in("id", ids);
+    ok(e2);
+    const dueById = {};
+    assigns.forEach(a => { dueById[a.content_id] = a.due_date || null; });
+    res.json(rows.map(c => { const item = rowToContent(c); item.data.dueDate = dueById[c.id] || null; return item; }));
   } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
 });
 
@@ -428,6 +479,176 @@ app.get("/api/admin/submissions", async (req, res) => {
     res.json(data.map(s => ({ uid: s.uid, answers: s.answers, score: s.score || null, submittedAt: s.submitted_at })));
   } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
 });
+
+// =========================================================
+// ADMIN: Assign content to specific users (manual)
+// =========================================================
+app.post("/api/admin/assign", async (req, res) => {
+  try {
+    const contentIds = Array.isArray(req.body.contentIds) ? req.body.contentIds : [];
+    const uids = Array.isArray(req.body.uids) ? req.body.uids : [];
+    const dueDate = req.body.dueDate ? Number(req.body.dueDate) : null; // ms timestamp, optional
+
+    if (contentIds.length === 0 || uids.length === 0) return res.status(400).json({ error: "missing_fields" });
+
+    const { data: contentRows, error: e1 } = await sb.from("content").select("*").in("id", contentIds);
+    ok(e1);
+    if (!contentRows || contentRows.length === 0) return res.status(404).json({ error: "content_not_found" });
+
+    const { data: profileRows, error: e2 } = await sb.from("profiles").select("*").in("id", uids).eq("status", "approved");
+    ok(e2);
+    if (!profileRows || profileRows.length === 0) return res.status(404).json({ error: "users_not_found" });
+
+    const rows = [];
+    for (const profile of profileRows) {
+      for (const c of contentRows) {
+        rows.push({ content_id: c.id, uid: profile.id, assigned_at: Date.now(), due_date: dueDate });
+      }
+    }
+    const { error: e3 } = await sb.from("assignments").upsert(rows, { onConflict: "content_id,uid" });
+    ok(e3);
+
+    // To enable email notifications later: uncomment below (and set up
+    // SMTP as noted at the top of this file).
+    // for (const profile of profileRows) {
+    //   await sendAssignmentEmail(profile.email, profile.name, contentRows.map(rowToContent).map(c => c.data));
+    // }
+
+    res.json({ ok: true, assignedUsers: profileRows.map(p => ({ id: p.id, name: p.name })), assignedContent: contentRows.length });
+  } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
+});
+
+// =========================================================
+// ADMIN: Bulk-assign from a spreadsheet upload
+// Expected columns (case-insensitive, flexible naming):
+// "User Name"/"Name", "Phone", "Topic / Module"/"Topic",
+// "Completion Date" (optional — blank means no deadline).
+// =========================================================
+app.post("/api/admin/assign-bulk-upload", upload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "no_file" });
+    const wb = XLSX.read(req.file.buffer, { type: "buffer", cellDates: true });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+
+    const results = { total: rows.length, assigned: 0, skipped: [] };
+    const { data: profiles } = await sb.from("profiles").select("*").eq("status", "approved");
+    const { data: allContent } = await sb.from("content").select("*");
+    const normPhone = s => String(s || "").replace(/[\s\-+]/g, "").toLowerCase();
+
+    for (const [i, row] of rows.entries()) {
+      const get = (...keys) => {
+        for (const k of keys) {
+          const found = Object.keys(row).find(rk => rk.trim().toLowerCase() === k);
+          if (found && String(row[found]).trim() !== "") return row[found];
+        }
+        return "";
+      };
+      const name = String(get("user name", "name") || "");
+      const phone = String(get("phone", "phone number", "mobile", "mobile number") || "");
+      const topic = String(get("topic / module", "topic/module", "topic", "module") || "");
+      const dateVal = get("completion date", "due date", "deadline");
+
+      if (!phone || !topic) { results.skipped.push({ row: i + 2, name, phone, topic, reason: "Missing phone or topic" }); continue; }
+
+      const profile = (profiles || []).find(p => normPhone(p.phone) === normPhone(phone));
+      if (!profile) { results.skipped.push({ row: i + 2, name, phone, topic, reason: "No approved user found with this phone" }); continue; }
+
+      const roles = profile.roles || [];
+      const matches = (allContent || []).filter(c => roles.includes(c.persona) && String(c.topic || "General").trim().toLowerCase() === topic.trim().toLowerCase());
+      if (matches.length === 0) { results.skipped.push({ row: i + 2, name, phone, topic, reason: "No content found for this topic under the user's role(s)" }); continue; }
+
+      let dueDate = null;
+      if (dateVal) {
+        const parsed = new Date(dateVal);
+        if (!isNaN(parsed.getTime())) dueDate = parsed.getTime();
+        else { results.skipped.push({ row: i + 2, name, phone, topic, reason: "Could not parse completion date: '" + dateVal + "'" }); continue; }
+      }
+
+      const assignRows = matches.map(c => ({ content_id: c.id, uid: profile.id, assigned_at: Date.now(), due_date: dueDate }));
+      const { error } = await sb.from("assignments").upsert(assignRows, { onConflict: "content_id,uid" });
+      if (error) { results.skipped.push({ row: i + 2, name, phone, topic, reason: "Database error: " + error.message }); continue; }
+      results.assigned++;
+
+      // To enable email notifications later: uncomment below.
+      // try { await sendAssignmentEmail(profile.email, profile.name, matches.map(c => rowToContent(c).data)); } catch (mailErr) { console.error(mailErr); }
+    }
+
+    res.json(results);
+  } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
+});
+
+app.get("/api/admin/assignments", async (req, res) => {
+  try {
+    let q = sb.from("assignments").select("*").order("assigned_at", { ascending: false }).limit(200);
+    if (req.query.uid) q = q.eq("uid", req.query.uid);
+    const { data, error } = await q;
+    ok(error);
+    res.json(data);
+  } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
+});
+
+// =========================================================
+// ADMIN: CSV export — one row per person. Approved users get training
+// completion counts (overall + per-role breakdown); pending/rejected/
+// revoked registrations are listed too so the file covers everyone.
+// =========================================================
+app.get("/api/admin/export-csv", async (req, res) => {
+  try {
+    const { data: profiles, error: e1 } = await sb.from("profiles").select("*").limit(2000);
+    ok(e1);
+    const { data: regs, error: e2 } = await sb.from("registrations").select("*").limit(2000);
+    ok(e2);
+
+    const contentCache = {}, progressCache = {};
+    async function contentFor(persona) {
+      if (!contentCache[persona]) {
+        const { data } = await sb.from("content").select("id").eq("persona", persona);
+        contentCache[persona] = data || [];
+      }
+      return contentCache[persona];
+    }
+    async function progressFor(persona, uid) {
+      const key = persona + "::" + uid;
+      if (!(key in progressCache)) {
+        const id = slug(persona) + "_" + uid;
+        const { data } = await sb.from("progress").select("completed").eq("id", id).maybeSingle();
+        progressCache[key] = (data && data.completed) || {};
+      }
+      return progressCache[key];
+    }
+
+    const header = ["Name","Phone","Email","Hub","City","Roles","Status","Per-Role Breakdown","Total Modules","Completed Modules","Pending Modules","Completion %"];
+    const rows = [];
+
+    for (const p of (profiles || [])) {
+      const roles = p.roles || [];
+      let total = 0, completed = 0;
+      const roleParts = [];
+      for (const persona of roles) {
+        const items = await contentFor(persona);
+        const done = await progressFor(persona, p.id);
+        const roleDone = items.filter(i => done[i.id]).length;
+        total += items.length;
+        completed += roleDone;
+        roleParts.push(`${persona}: ${roleDone}/${items.length} done`);
+      }
+      const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+      rows.push([p.name, p.phone, p.email, p.hub, p.city, roles.join("; "), "Active", roleParts.join(" | "), total, completed, total - completed, pct + "%"]);
+    }
+    for (const r of (regs || [])) {
+      if ((profiles || []).some(p => p.id === r.uid)) continue;
+      rows.push([r.name, r.phone, r.email, r.hub, r.city, r.role, cap(r.status), "", "", "", "", ""]);
+    }
+
+    const csv = [header, ...rows].map(r => r.map(csvEscape).join(",")).join("\r\n");
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", `attachment; filename="lastmile_ready_users_${Date.now()}.csv"`);
+    res.send(csv);
+  } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
+});
+function csvEscape(v) { const s = v == null ? "" : String(v); return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }
+function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
 
 // =========================================================
 // Row -> API payload helpers (snake_case DB columns -> camelCase JSON,
