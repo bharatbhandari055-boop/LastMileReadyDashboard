@@ -137,26 +137,27 @@ app.post("/api/progress", async (req, res) => {
 
 app.get("/api/assessment", async (req, res) => {
   try {
-    const { data, error } = await sb.from("assessments").select("*").eq("persona", req.query.persona).maybeSingle();
+    const topic = req.query.topic || "General";
+    const { data, error } = await sb.from("assessments").select("*").eq("persona", req.query.persona).eq("topic", topic).maybeSingle();
     ok(error);
     res.json({ questions: (data && data.questions) || [] });
   } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
 });
 app.get("/api/submission", async (req, res) => {
   try {
-    const id = slug(req.query.persona) + "_" + req.query.uid;
-    const { data, error } = await sb.from("submissions").select("*").eq("id", id).maybeSingle();
+    const topic = req.query.topic || "General";
+    const { data, error } = await sb.from("submissions").select("*").eq("persona", req.query.persona).eq("topic", topic).eq("uid", req.query.uid).maybeSingle();
     ok(error);
     if (!data) return res.json({ exists: false });
-    res.json({ exists: true, data: { persona: data.persona, uid: data.uid, answers: data.answers, submittedAt: data.submitted_at } });
+    res.json({ exists: true, data: { persona: data.persona, topic: data.topic, uid: data.uid, answers: data.answers, submittedAt: data.submitted_at } });
   } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
 });
 app.post("/api/submission", async (req, res) => {
   try {
     const { persona, uid, answers } = req.body || {};
+    const topic = req.body.topic || "General";
     if (!persona || !uid) return res.status(400).json({ error: "missing_fields" });
-    const id = slug(persona) + "_" + uid;
-    const { error } = await sb.from("submissions").upsert({ id, persona, uid, answers: answers || {}, submitted_at: Date.now() });
+    const { error } = await sb.from("submissions").upsert({ persona, topic, uid, answers: answers || {}, submitted_at: Date.now() });
     ok(error);
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
@@ -304,7 +305,7 @@ app.get("/api/admin/content", async (req, res) => {
 app.post("/api/admin/content", async (req, res) => {
   try {
     const b = req.body || {};
-    const row = { persona: b.persona, type: b.type, title: b.title, description: b.description, url: b.url, required_minutes: b.requiredMinutes, created_at: b.createdAt || Date.now() };
+    const row = { persona: b.persona, topic: b.topic || "General", type: b.type, title: b.title, description: b.description, url: b.url, required_minutes: b.requiredMinutes, created_at: b.createdAt || Date.now() };
     const { data, error } = await sb.from("content").insert(row).select().single();
     ok(error);
     res.json({ id: data.id });
@@ -313,7 +314,7 @@ app.post("/api/admin/content", async (req, res) => {
 app.put("/api/admin/content/:id", async (req, res) => {
   try {
     const b = req.body || {};
-    const row = { persona: b.persona, type: b.type, title: b.title, description: b.description, url: b.url, required_minutes: b.requiredMinutes, created_at: b.createdAt || Date.now() };
+    const row = { persona: b.persona, topic: b.topic || "General", type: b.type, title: b.title, description: b.description, url: b.url, required_minutes: b.requiredMinutes, created_at: b.createdAt || Date.now() };
     const { error } = await sb.from("content").update(row).eq("id", req.params.id);
     ok(error);
     res.json({ ok: true });
@@ -340,9 +341,24 @@ app.post("/api/admin/upload", upload.single("file"), async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: "upload_failed" }); }
 });
 
+// Distinct topics that currently have content under a persona, in the
+// order that content was first created — lets the admin panel offer a
+// topic switcher without a separate topics table.
+app.get("/api/admin/topics", async (req, res) => {
+  try {
+    const { data, error } = await sb.from("content").select("topic, created_at").eq("persona", req.query.persona).order("created_at", { ascending: true });
+    ok(error);
+    const seen = [];
+    (data || []).forEach(r => { const t = (r.topic || "General").trim() || "General"; if (!seen.includes(t)) seen.push(t); });
+    if (!seen.includes("General")) seen.push("General");
+    res.json({ topics: seen });
+  } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
+});
+
 app.get("/api/admin/questions", async (req, res) => {
   try {
-    const { data, error } = await sb.from("assessments").select("*").eq("persona", req.query.persona).maybeSingle();
+    const topic = req.query.topic || "General";
+    const { data, error } = await sb.from("assessments").select("*").eq("persona", req.query.persona).eq("topic", topic).maybeSingle();
     ok(error);
     res.json({ questions: (data && data.questions) || [] });
   } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
@@ -350,6 +366,7 @@ app.get("/api/admin/questions", async (req, res) => {
 app.post("/api/admin/questions", async (req, res) => {
   try {
     const { persona, text, type, options } = req.body || {};
+    const topic = req.body.topic || "General";
     if (!persona || !text) return res.status(400).json({ error: "missing_fields" });
     const q = { id: crypto.randomUUID(), text };
     if (type === "mcq") {
@@ -358,19 +375,21 @@ app.post("/api/admin/questions", async (req, res) => {
       q.type = "mcq";
       q.options = opts;
     }
-    const { data: existing } = await sb.from("assessments").select("*").eq("persona", persona).maybeSingle();
+    const { data: existing } = await sb.from("assessments").select("*").eq("persona", persona).eq("topic", topic).maybeSingle();
     const qs = (existing && existing.questions) || [];
     qs.push(q);
-    const { error } = await sb.from("assessments").upsert({ persona, questions: qs });
+    const { error } = await sb.from("assessments").upsert({ persona, topic, questions: qs });
     ok(error);
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
 });
-app.delete("/api/admin/questions/:persona/:qid", async (req, res) => {
+app.delete("/api/admin/questions/:qid", async (req, res) => {
   try {
-    const { data: existing } = await sb.from("assessments").select("*").eq("persona", req.params.persona).maybeSingle();
+    const persona = req.query.persona;
+    const topic = req.query.topic || "General";
+    const { data: existing } = await sb.from("assessments").select("*").eq("persona", persona).eq("topic", topic).maybeSingle();
     const qs = ((existing && existing.questions) || []).filter(x => x.id !== req.params.qid);
-    const { error } = await sb.from("assessments").upsert({ persona: req.params.persona, questions: qs });
+    const { error } = await sb.from("assessments").upsert({ persona, topic, questions: qs });
     ok(error);
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
@@ -378,7 +397,8 @@ app.delete("/api/admin/questions/:persona/:qid", async (req, res) => {
 
 app.get("/api/admin/submissions", async (req, res) => {
   try {
-    const { data, error } = await sb.from("submissions").select("*").eq("persona", req.query.persona).limit(50);
+    const topic = req.query.topic || "General";
+    const { data, error } = await sb.from("submissions").select("*").eq("persona", req.query.persona).eq("topic", topic).limit(50);
     ok(error);
     res.json(data.map(s => ({ uid: s.uid, answers: s.answers, submittedAt: s.submitted_at })));
   } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
@@ -397,7 +417,7 @@ function toProfilePayload(p, dropPin) {
   return out;
 }
 function rowToContent(c) {
-  return { id: c.id, data: { persona: c.persona, type: c.type, title: c.title, description: c.description, url: c.url, requiredMinutes: c.required_minutes, createdAt: c.created_at } };
+  return { id: c.id, data: { persona: c.persona, topic: c.topic || "General", type: c.type, title: c.title, description: c.description, url: c.url, requiredMinutes: c.required_minutes, createdAt: c.created_at } };
 }
 
 // =========================================================

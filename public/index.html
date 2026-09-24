@@ -320,65 +320,87 @@ async function renderPersona(){
   }
   app.innerHTML = `${switcher}<div class="row"><div class="section-title" style="margin:0">${ICONS[p]||"🎓"} ${p} — Training Content</div>
   <div class="top-actions">
-    <button class="btn btn-primary" id="toAssess" disabled>📝 Take Assessment</button>
     <button class="btn btn-sm" id="wrongRole">${state.kiosk?"Not you? Logout":"Wrong role? Request change"}</button>
   </div></div>
-  <div id="progressNote" class="msg msg-warn hidden"></div>
-  <div id="contentList">Loading…</div>`;
+  <p style="color:var(--muted);font-size:12px;margin-top:-4px">Content is grouped by module below. Finish everything in a module to unlock its assessment.</p>
+  <div id="topicGroups">Loading…</div>`;
   document.querySelectorAll("[data-switch]").forEach(b=> b.onclick = ()=>{ state.persona = b.dataset.switch; render(); });
   document.getElementById("wrongRole").onclick = ()=> state.kiosk ? logout() : renderRegister(state.profile);
   await loadContentAndProgress(p);
 }
 
 async function loadContentAndProgress(p){
-  const list = document.getElementById("contentList");
+  const container = document.getElementById("topicGroups");
   try{
     currentContentDocs = await api("/api/content?persona="+encodeURIComponent(p));
-  }catch(e){ list.innerHTML = `<div class="empty">Could not load content.</div>`; return; }
+  }catch(e){ container.innerHTML = `<div class="empty">Could not load content.</div>`; return; }
   try{
     const progJson = await api("/api/progress?persona="+encodeURIComponent(p)+"&uid="+encodeURIComponent(currentUid()));
     currentProgress = progJson.completed || {};
   }catch(e){ currentProgress = {}; }
-  renderContentListAndAssessButton(p);
+  renderTopicGroups(p);
 }
 
-// Redraws the content list + completion tags, and enables "Take Assessment"
-// only once every content item for this persona has been marked complete.
-function renderContentListAndAssessButton(p){
-  const list = document.getElementById("contentList");
-  const assessBtn = document.getElementById("toAssess");
-  const note = document.getElementById("progressNote");
+// Groups the persona's content by its "topic" (the module name set at
+// upload time). Each group gets its own progress note + "Take Assessment"
+// button, which only unlocks once every content item *in that group* is
+// complete — so one persona can have several independent module quizzes
+// instead of a single all-or-nothing assessment.
+function groupByTopic(docs){
+  const map = new Map();
+  docs.forEach(item=>{
+    const t = (item.data.topic && item.data.topic.trim()) || "General";
+    if(!map.has(t)) map.set(t, []);
+    map.get(t).push(item);
+  });
+  return map;
+}
+
+function renderTopicGroups(p){
+  const container = document.getElementById("topicGroups");
   if(currentContentDocs.length===0){
-    list.innerHTML = `<div class="empty">No training content added yet for ${p}.</div>`;
-    assessBtn.disabled = false;
-    assessBtn.onclick = ()=>{ state.view="assessment"; render(); };
-    note.classList.add("hidden");
+    // No content at all yet — fall back to a single persona-wide
+    // assessment under the "General" topic, same as the old behavior.
+    container.innerHTML = `<div class="empty">No training content added yet for ${p}.</div>
+    <div class="content-card row" style="margin-top:10px;align-items:center">
+      <div><b>General</b> assessment</div>
+      <button class="btn btn-primary btn-sm" id="genAssessBtn">📝 Take Assessment</button>
+    </div>`;
+    document.getElementById("genAssessBtn").onclick = ()=>{ state.view="assessment"; state.topic="General"; render(); };
     return;
   }
-  list.innerHTML = "";
-  let doneCount = 0;
-  currentContentDocs.forEach(({id,data:c})=>{
-    const done = !!currentProgress[id];
-    if(done) doneCount++;
-    const el = document.createElement("div");
-    el.className="content-card";
-    el.innerHTML = `<span class="tag">${contentIcon(c.type)} ${(c.type||"link").toUpperCase()}</span>
-    ${done ? '<span class="tag" style="background:#e6f6ec;color:var(--ok)">✅ Completed</span>' : ""}
-    <h3 style="margin:4px 0">${escapeHtml(c.title||"Untitled")}</h3>
-    <p style="color:var(--muted);font-size:13px;margin:4px 0">${escapeHtml(c.description||"")}</p>
-    <button class="btn btn-primary btn-sm" data-view>${done ? "▶ View again" : "▶ View full screen"}</button>`;
-    el.querySelector("[data-view]").onclick = ()=> openContentViewer(p, id, c);
-    list.appendChild(el);
+  const groups = groupByTopic(currentContentDocs);
+  container.innerHTML = "";
+  groups.forEach((items, topic)=>{
+    const section = document.createElement("div");
+    section.style.marginBottom = "24px";
+    let doneCount = 0;
+    let cardsHtml = "";
+    items.forEach(({id,data:c})=>{
+      const done = !!currentProgress[id];
+      if(done) doneCount++;
+      cardsHtml += `<div class="content-card" data-content-id="${escapeAttr(id)}">
+        <span class="tag">${contentIcon(c.type)} ${(c.type||"link").toUpperCase()}</span>
+        ${done ? '<span class="tag" style="background:#e6f6ec;color:var(--ok)">✅ Completed</span>' : ""}
+        <h3 style="margin:4px 0">${escapeHtml(c.title||"Untitled")}</h3>
+        <p style="color:var(--muted);font-size:13px;margin:4px 0">${escapeHtml(c.description||"")}</p>
+        <button class="btn btn-primary btn-sm" data-view>${done ? "▶ View again" : "▶ View full screen"}</button>
+      </div>`;
+    });
+    const allDone = doneCount>=items.length;
+    section.innerHTML = `<div class="row" style="align-items:center;margin-top:6px">
+      <div class="section-title" style="margin:8px 0 4px">📘 ${escapeHtml(topic)}</div>
+      <button class="btn btn-primary btn-sm" data-topic-assess ${allDone?"":"disabled"}>📝 Take Assessment</button>
+    </div>
+    ${allDone ? "" : `<div class="msg msg-warn">Complete all content in this module to unlock its assessment (${doneCount}/${items.length} done).</div>`}
+    ${cardsHtml}`;
+    container.appendChild(section);
+    items.forEach(({id,data:c})=>{
+      section.querySelector(`[data-content-id="${CSS.escape(id)}"] [data-view]`).onclick = ()=> openContentViewer(p, id, c);
+    });
+    const assessBtn = section.querySelector("[data-topic-assess]");
+    assessBtn.onclick = allDone ? (()=>{ state.view="assessment"; state.topic=topic; render(); }) : null;
   });
-  const allDone = doneCount>=currentContentDocs.length;
-  assessBtn.disabled = !allDone;
-  assessBtn.onclick = allDone ? (()=>{ state.view="assessment"; render(); }) : null;
-  if(allDone){
-    note.classList.add("hidden");
-  } else {
-    note.classList.remove("hidden");
-    note.textContent = `Complete all training content to unlock the assessment (${doneCount}/${currentContentDocs.length} done).`;
-  }
 }
 
 // Everything (video, ppt, doc, link) opens full-screen over the dashboard —
@@ -498,32 +520,33 @@ async function markContentComplete(persona, contentId){
   try{
     const result = await api("/api/progress", {method:"POST", body: JSON.stringify({persona, uid, contentId})});
     currentProgress = result.completed;
-    renderContentListAndAssessButton(persona);
+    renderTopicGroups(persona);
     showToast("Marked complete ✅");
   }catch(e){ showToast("Could not save progress."); }
 }
 
 async function renderAssessment(){
   const p = state.persona;
-  crumbSub.textContent = `Assessment: ${p}`;
-  app.innerHTML = `<div class="section-title">📝 ${p} — Assessment</div><div id="assessBody">Loading…</div>`;
+  const topic = state.topic || "General";
+  crumbSub.textContent = `Assessment: ${p} — ${topic}`;
+  app.innerHTML = `<div class="section-title">📝 ${p} — ${escapeHtml(topic)} Assessment</div><div id="assessBody">Loading…</div>`;
   const body = document.getElementById("assessBody");
   try{
-    const aJson = await api("/api/assessment?persona="+encodeURIComponent(p));
+    const aJson = await api("/api/assessment?persona="+encodeURIComponent(p)+"&topic="+encodeURIComponent(topic));
     const questions = aJson.questions || [];
-    if(questions.length===0){ body.innerHTML = `<div class="empty">No assessment has been set up for ${p} yet.</div>`; return; }
-    const subJson = await api("/api/submission?persona="+encodeURIComponent(p)+"&uid="+encodeURIComponent(currentUid()));
+    if(questions.length===0){ body.innerHTML = `<div class="empty">No assessment has been set up for ${escapeHtml(topic)} yet.</div>`; return; }
+    const subJson = await api("/api/submission?persona="+encodeURIComponent(p)+"&topic="+encodeURIComponent(topic)+"&uid="+encodeURIComponent(currentUid()));
     if(subJson.exists){
       body.innerHTML = `<div class="msg msg-ok">✅ You already submitted this assessment on ${new Date(subJson.data.submittedAt).toLocaleString()}.</div>
       <button class="btn" id="resub">Submit again</button>`;
-      document.getElementById("resub").onclick = ()=>drawForm(questions, body, p, subJson.data.answers);
+      document.getElementById("resub").onclick = ()=>drawForm(questions, body, p, topic, subJson.data.answers);
       return;
     }
-    drawForm(questions, body, p, {});
+    drawForm(questions, body, p, topic, {});
   }catch(e){ body.innerHTML = `<div class="empty">Could not load assessment.</div>`; }
 }
 
-function drawForm(questions, body, p, prior){
+function drawForm(questions, body, p, topic, prior){
   body.innerHTML = `<form id="assessForm"></form>`;
   const form = document.getElementById("assessForm");
   questions.forEach(q=>{
@@ -555,7 +578,7 @@ function drawForm(questions, body, p, prior){
       answers[wrap.dataset.qid] = checked ? checked.value : "";
     });
     try{
-      await api("/api/submission", {method:"POST", body: JSON.stringify({persona:p, uid:currentUid(), answers})});
+      await api("/api/submission", {method:"POST", body: JSON.stringify({persona:p, topic, uid:currentUid(), answers})});
       body.innerHTML = `<div class="msg msg-ok">✅ Assessment submitted. Thank you!</div>`;
     }catch(e){ showToast("Could not submit."); }
   };

@@ -220,23 +220,42 @@ async function renderAdmin(){
     const b = document.createElement("button");
     b.className="btn"+(p===state.persona?" btn-primary":"");
     b.textContent = p;
-    b.onclick = ()=>{ state.persona=p; renderAdmin(); };
+    b.onclick = ()=>{ state.persona=p; state.topic=null; renderAdmin(); };
     tabs.appendChild(b);
   });
   const bodyEl = document.getElementById("adminBody");
   bodyEl.innerHTML = `<div class="section-title">Content for ${state.persona}</div>
+  <p style="color:var(--muted);font-size:12px;margin-top:-4px">Give each piece of content a Topic/Module — items sharing a topic are grouped for staff and share one assessment below.</p>
   <div id="adminContentList">Loading…</div>
   <button class="btn btn-primary btn-sm" id="addContentBtn">＋ Add content</button>
-  <div class="section-title">Assessment questions for ${state.persona}</div>
+  <div class="section-title">Assessments for ${state.persona}</div>
+  <p style="color:var(--muted);font-size:12px;margin-top:-4px">Pick a topic/module to manage its own assessment questions and submissions.</p>
+  <div class="top-actions" id="topicTabs" style="margin-bottom:8px"></div>
   <div id="adminQList">Loading…</div>
   <button class="btn btn-primary btn-sm" id="addQBtn">＋ Add question</button>
-  <div class="section-title">Submissions for ${state.persona}</div>
+  <div class="section-title">Submissions</div>
   <div id="adminSubs">Loading…</div>`;
   document.getElementById("addContentBtn").onclick = ()=>openContentForm(null);
   document.getElementById("addQBtn").onclick = ()=>openQuestionForm();
   loadAdminContent();
-  loadAdminQuestions();
-  loadAdminSubs();
+}
+
+// Topics discovered for the persona currently selected in the admin
+// panel — always includes "General" as a fallback even with no content,
+// so an assessment can still be set up before any content exists.
+let adminTopics = ["General"];
+
+function renderTopicTabs(){
+  const wrap = document.getElementById("topicTabs");
+  if(!wrap) return;
+  wrap.innerHTML = "";
+  adminTopics.forEach(t=>{
+    const b = document.createElement("button");
+    b.className = "btn btn-sm"+(t===state.topic?" btn-primary":"");
+    b.textContent = t;
+    b.onclick = ()=>{ state.topic = t; renderTopicTabs(); loadAdminQuestions(); loadAdminSubs(); };
+    wrap.appendChild(b);
+  });
 }
 
 async function loadAdminAccounts(){
@@ -386,28 +405,49 @@ async function loadAdminContent(){
   let rows;
   try{ rows = await api("/api/admin/content?persona="+encodeURIComponent(state.persona)); }
   catch(e){ el.innerHTML = `<div class="empty">Could not load content.</div>`; return; }
+
+  // Derive the topic list from content itself (in the order topics were
+  // first used) and keep "General" always available as a fallback.
+  const seen = [];
+  rows.forEach(({data:c})=>{ const t=(c.topic&&c.topic.trim())||"General"; if(!seen.includes(t)) seen.push(t); });
+  if(!seen.includes("General")) seen.push("General");
+  adminTopics = seen;
+  if(!state.topic || !adminTopics.includes(state.topic)) state.topic = adminTopics[0];
+  renderTopicTabs();
+  loadAdminQuestions();
+  loadAdminSubs();
+
   if(rows.length===0){ el.innerHTML=`<div class="empty">No content yet.</div>`; return; }
-  el.innerHTML="";
-  rows.forEach(({id,data:c})=>{
-    const row = document.createElement("div");
-    row.className="content-card";
-    row.innerHTML = `<div class="row"><div><span class="tag">${(c.type||"link").toUpperCase()}</span>
-    <h3 style="margin:4px 0">${escapeHtml(c.title)}</h3></div>
-    <div class="top-actions">
-      <button class="btn btn-sm" data-e>Edit</button>
-      <button class="btn btn-sm btn-danger" data-d>Delete</button>
-    </div></div>`;
-    row.querySelector("[data-e]").onclick = ()=>openContentForm({id, data:()=>c});
-    row.querySelector("[data-d]").onclick = (e)=> armConfirm(e.target, async ()=>{
-      try{ await api("/api/admin/content/"+id, {method:"DELETE"}); showToast("Deleted."); loadAdminContent(); }
-      catch(err){ showToast("Delete failed — admin access required."); }
+
+  const groups = new Map();
+  rows.forEach(item=>{ const t=(item.data.topic&&item.data.topic.trim())||"General"; if(!groups.has(t)) groups.set(t,[]); groups.get(t).push(item); });
+  el.innerHTML = "";
+  groups.forEach((items, topic)=>{
+    const h = document.createElement("div");
+    h.style.cssText = "font-size:12px;font-weight:600;color:var(--muted);margin:14px 0 4px";
+    h.textContent = "📘 "+topic;
+    el.appendChild(h);
+    items.forEach(({id,data:c})=>{
+      const row = document.createElement("div");
+      row.className="content-card";
+      row.innerHTML = `<div class="row"><div><span class="tag">${(c.type||"link").toUpperCase()}</span>
+      <h3 style="margin:4px 0">${escapeHtml(c.title)}</h3></div>
+      <div class="top-actions">
+        <button class="btn btn-sm" data-e>Edit</button>
+        <button class="btn btn-sm btn-danger" data-d>Delete</button>
+      </div></div>`;
+      row.querySelector("[data-e]").onclick = ()=>openContentForm({id, data:()=>c});
+      row.querySelector("[data-d]").onclick = (e)=> armConfirm(e.target, async ()=>{
+        try{ await api("/api/admin/content/"+id, {method:"DELETE"}); showToast("Deleted."); loadAdminContent(); }
+        catch(err){ showToast("Delete failed — admin access required."); }
+      });
+      el.appendChild(row);
     });
-    el.appendChild(row);
   });
 }
 
 function openContentForm(doc){
-  const c = doc ? doc.data() : {type:"ppt",title:"",description:"",url:""};
+  const c = doc ? doc.data() : {type:"ppt",title:"",description:"",url:"",topic: (state.topic && state.topic!=="General") ? state.topic : ""};
   const wrap = document.createElement("div");
   wrap.className="content-card";
   wrap.innerHTML = `
@@ -418,6 +458,10 @@ function openContentForm(doc){
     <option value="doc">Document</option>
     <option value="link">Link</option>
   </select>
+  <label>Topic / Module</label>
+  <input class="field" id="cTopic" list="topicSuggestions" placeholder="e.g. Module 1: Safety Basics (leave blank for General)" value="${escapeAttr(c.topic||"")}">
+  <datalist id="topicSuggestions">${adminTopics.map(t=>`<option value="${escapeAttr(t)}">`).join("")}</datalist>
+  <p style="font-size:11px;color:var(--muted);margin:-2px 0 6px">Content sharing a topic is grouped together for staff and unlocks one shared assessment once all of it is completed.</p>
   <label>Title</label><input class="field" id="cTitle" value="${escapeAttr(c.title)}">
   <label>Description</label><input class="field" id="cDesc" value="${escapeAttr(c.description)}">
   <label>URL (external link, or leave blank and upload a file below)</label>
@@ -463,6 +507,7 @@ function openContentForm(doc){
     const data = {
       persona: state.persona,
       type,
+      topic: wrap.querySelector("#cTopic").value.trim() || "General",
       title: wrap.querySelector("#cTitle").value.trim()||"Untitled",
       description: wrap.querySelector("#cDesc").value.trim(),
       url,
@@ -479,10 +524,12 @@ function openContentForm(doc){
 
 async function loadAdminQuestions(){
   const el = document.getElementById("adminQList");
+  if(!el) return;
+  el.innerHTML = "Loading…";
   let qs;
-  try{ const j = await api("/api/admin/questions?persona="+encodeURIComponent(state.persona)); qs = j.questions; }
+  try{ const j = await api("/api/admin/questions?persona="+encodeURIComponent(state.persona)+"&topic="+encodeURIComponent(state.topic)); qs = j.questions; }
   catch(e){ el.innerHTML=`<div class="empty">Could not load questions.</div>`; return; }
-  if(qs.length===0){ el.innerHTML=`<div class="empty">No questions yet.</div>`; return; }
+  if(qs.length===0){ el.innerHTML=`<div class="empty">No questions yet for "${escapeHtml(state.topic)}".</div>`; return; }
   el.innerHTML="";
   qs.forEach((q,i)=>{
     const row = document.createElement("div");
@@ -494,7 +541,7 @@ async function loadAdminQuestions(){
     </div>
     <button class="btn btn-sm btn-danger">Remove</button>`;
     row.querySelector("button").onclick = async ()=>{
-      try{ await api("/api/admin/questions/"+slug(state.persona)+"/"+q.id, {method:"DELETE"}); loadAdminQuestions(); }
+      try{ await api("/api/admin/questions/"+q.id+"?persona="+encodeURIComponent(state.persona)+"&topic="+encodeURIComponent(state.topic), {method:"DELETE"}); loadAdminQuestions(); }
       catch(e){ showToast("Remove failed."); }
     };
     el.appendChild(row);
@@ -507,7 +554,7 @@ function openQuestionForm(){
   const wrap = document.createElement("div");
   wrap.className="content-card";
   wrap.id="qFormBox";
-  wrap.innerHTML = `<label>New assessment question</label>
+  wrap.innerHTML = `<label>New question for "${escapeHtml(state.topic)}"</label>
   <input class="field" id="qText" placeholder="Enter the question text">
   <label>Answer type</label>
   <select class="field" id="qType">
@@ -542,7 +589,7 @@ function openQuestionForm(){
     const text = document.getElementById("qText").value.trim();
     if(!text){ showToast("Enter a question first."); return; }
     const type = typeSel.value;
-    const payload = { persona: state.persona, text, type };
+    const payload = { persona: state.persona, topic: state.topic, text, type };
     if(type==="mcq"){
       const options = Array.from(optsList.querySelectorAll("[data-opt]")).map(i=>i.value.trim()).filter(Boolean);
       if(options.length<2){ showToast("Enter at least 2 non-empty options."); return; }
@@ -558,10 +605,12 @@ function openQuestionForm(){
 
 async function loadAdminSubs(){
   const el = document.getElementById("adminSubs");
+  if(!el) return;
+  el.innerHTML = "Loading…";
   let rows;
-  try{ rows = await api("/api/admin/submissions?persona="+encodeURIComponent(state.persona)); }
+  try{ rows = await api("/api/admin/submissions?persona="+encodeURIComponent(state.persona)+"&topic="+encodeURIComponent(state.topic)); }
   catch(e){ el.innerHTML=`<div class="empty">Could not load submissions.</div>`; return; }
-  if(rows.length===0){ el.innerHTML=`<div class="empty">No submissions yet.</div>`; return; }
+  if(rows.length===0){ el.innerHTML=`<div class="empty">No submissions yet for "${escapeHtml(state.topic)}".</div>`; return; }
   let bodyRows = "";
   rows.forEach(s=>{
     bodyRows += `<tr><td>${s.uid?s.uid.slice(0,10):"?"}…</td><td>${new Date(s.submittedAt).toLocaleString()}</td><td>${Object.keys(s.answers||{}).length}</td></tr>`;
