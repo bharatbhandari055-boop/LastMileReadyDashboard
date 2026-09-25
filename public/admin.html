@@ -57,7 +57,6 @@ th,td{border-bottom:1px solid var(--border);padding:6px;text-align:left;}
     <div class="sub" id="crumbSub">Loading…</div>
   </div>
   <div class="top-actions">
-    <button class="btn hidden" id="exportCsvBtn">⬇ Export CSV</button>
     <button class="btn hidden" id="logoutBtn">🔓 Log out</button>
   </div>
 </header>
@@ -65,12 +64,11 @@ th,td{border-bottom:1px solid var(--border);padding:6px;text-align:left;}
 
 <script>
 const API = ""; // same origin
-const PERSONAS = ["Scanner","Team Leader","Hub Manager and above","City Lead","Regional Manager"];
+const PERSONAS = ["Scanner","Team Leader","Hub Manager and above","City Lead","Regional Manager","Hope on Wheels"];
 const slug = p => p.replace(/[^a-zA-Z0-9]/g,"_");
 const app = document.getElementById("app");
 const crumbSub = document.getElementById("crumbSub");
 const logoutBtn = document.getElementById("logoutBtn");
-const exportCsvBtn = document.getElementById("exportCsvBtn");
 
 let adminSession = null; // {token, username}
 try{ const saved = sessionStorage.getItem("adminSession"); if(saved) adminSession = JSON.parse(saved); }catch(e){}
@@ -126,18 +124,6 @@ async function apiUpload(path, formData){
 
 async function init(){
   logoutBtn.onclick = ()=>{ adminSession=null; sessionStorage.removeItem("adminSession"); goHome(); };
-  exportCsvBtn.onclick = async ()=>{
-    try{
-      const res = await fetch(API+"/api/admin/export-csv", { headers: { "Authorization": "Bearer "+adminSession.token } });
-      if(!res.ok) throw new Error("failed");
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = "lastmile_ready_users.csv";
-      document.body.appendChild(a); a.click(); a.remove();
-      URL.revokeObjectURL(url);
-    }catch(e){ showToast("CSV export failed."); }
-  };
   goHome();
 }
 
@@ -152,14 +138,12 @@ async function goHome(){
     return render();
   }
   logoutBtn.classList.remove("hidden");
-  exportCsvBtn.classList.remove("hidden");
   state = { view:"admin", persona: state.persona || PERSONAS[0] };
   render();
 }
 
 function render(){
   logoutBtn.classList.toggle("hidden", !adminSession);
-  exportCsvBtn.classList.toggle("hidden", !adminSession);
   if(state.view==="loading" || state.view==="checkingSetup"){ crumbSub.textContent="Loading…"; app.innerHTML="Loading…"; return; }
   if(state.view==="setup") return renderSetup();
   if(state.view==="login") return renderAdminLogin();
@@ -222,59 +206,122 @@ async function renderAdmin(){
   crumbSub.textContent = "Logged in as "+(adminSession.username||"admin");
   app.innerHTML = `<div class="section-title">Pending Registrations</div>
   <div id="adminRegs">Loading…</div>
+  <div class="section-title">Bulk Rider Onboarding (Hope on Wheels)</div>
+  <div id="bulkRiderPanel"></div>
   <div class="section-title">Currently Assigned Users</div>
   <div id="adminAllUsers">Loading…</div>
   <div class="section-title">Admin Accounts</div>
   <div id="adminAccounts">Loading…</div>
-  <div class="section-title">Assign Content to Users</div>
-  <div id="assignPanel">Loading…</div>
   <div class="grid" id="adminTabs"></div>
   <div id="adminBody"></div>`;
   loadAdminRegs();
   loadAllUsers();
   loadAdminAccounts();
-  renderAssignPanel();
+  renderBulkRiderPanel();
   const tabs = document.getElementById("adminTabs");
   PERSONAS.forEach(p=>{
     const b = document.createElement("button");
     b.className="btn"+(p===state.persona?" btn-primary":"");
     b.textContent = p;
-    b.onclick = ()=>{ state.persona=p; state.topic=null; renderAdmin(); };
+    b.onclick = ()=>{ state.persona=p; renderAdmin(); };
     tabs.appendChild(b);
   });
   const bodyEl = document.getElementById("adminBody");
   bodyEl.innerHTML = `<div class="section-title">Content for ${state.persona}</div>
-  <p style="color:var(--muted);font-size:12px;margin-top:-4px">Give each piece of content a Topic/Module — items sharing a topic are grouped for staff and share one assessment below.</p>
   <div id="adminContentList">Loading…</div>
   <button class="btn btn-primary btn-sm" id="addContentBtn">＋ Add content</button>
-  <div class="section-title">Assessments for ${state.persona}</div>
-  <p style="color:var(--muted);font-size:12px;margin-top:-4px">Pick a topic/module to manage its own assessment questions and submissions.</p>
-  <div class="top-actions" id="topicTabs" style="margin-bottom:8px"></div>
+  <div class="section-title">Assessment questions for ${state.persona}</div>
+  <div class="content-card" style="display:flex;align-items:center;gap:8px">
+    <label style="margin:0">Pass mark (% of MCQs correct)</label>
+    <input class="field" id="passScoreInput" style="width:80px;margin:0" inputmode="numeric">
+    <button class="btn btn-sm" id="savePassScore">Save</button>
+  </div>
   <div id="adminQList">Loading…</div>
   <button class="btn btn-primary btn-sm" id="addQBtn">＋ Add question</button>
-  <div class="section-title">Submissions</div>
+  <div class="section-title">Submissions for ${state.persona}</div>
   <div id="adminSubs">Loading…</div>`;
   document.getElementById("addContentBtn").onclick = ()=>openContentForm(null);
   document.getElementById("addQBtn").onclick = ()=>openQuestionForm();
+  document.getElementById("savePassScore").onclick = async ()=>{
+    const val = Number(document.getElementById("passScoreInput").value);
+    if(!(val>0 && val<=100)){ showToast("Enter a pass mark between 1 and 100."); return; }
+    try{ await api("/api/admin/assessment/"+encodeURIComponent(state.persona)+"/pass-score", {method:"POST", body: JSON.stringify({passScore: val})}); showToast("Pass mark saved."); }
+    catch(e){ showToast("Save failed — admin access required."); }
+  };
   loadAdminContent();
+  loadAdminQuestions();
+  loadAdminSubs();
 }
 
-// Topics discovered for the persona currently selected in the admin
-// panel — always includes "General" as a fallback even with no content,
-// so an assessment can still be set up before any content exists.
-let adminTopics = ["General"];
+function renderBulkRiderPanel(){
+  const el = document.getElementById("bulkRiderPanel");
+  el.innerHTML = `<div class="content-card">
+    <p style="font-size:12px;color:var(--muted);margin-top:0">
+      Upload a CSV with columns <b>Phone, Hub, City</b> (Name is optional). Each new phone number gets an approved
+      account with a PIN = last 4 digits of that phone; the rider is forced to change it on first login.
+      Re-uploading an existing phone updates their Name/Hub/City only — PIN and approval are left untouched.
+    </p>
+    <div class="top-actions">
+      <button class="btn btn-sm" id="downloadRiderTemplate">⬇️ Download template CSV</button>
+      <input type="file" id="riderCsvInput" accept=".csv" class="hidden">
+      <button class="btn btn-primary btn-sm" id="uploadRiderCsvBtn">⬆️ Upload filled sheet</button>
+    </div>
+    <div id="bulkRiderResult" style="margin-top:10px"></div>
+  </div>`;
 
-function renderTopicTabs(){
-  const wrap = document.getElementById("topicTabs");
-  if(!wrap) return;
-  wrap.innerHTML = "";
-  adminTopics.forEach(t=>{
-    const b = document.createElement("button");
-    b.className = "btn btn-sm"+(t===state.topic?" btn-primary":"");
-    b.textContent = t;
-    b.onclick = ()=>{ state.topic = t; renderTopicTabs(); loadAdminQuestions(); loadAdminSubs(); };
-    wrap.appendChild(b);
-  });
+  document.getElementById("downloadRiderTemplate").onclick = ()=>{
+    const csv = "Phone,Name,Hub,City\n9876543210,,Hub Name,City Name\n";
+    const blob = new Blob([csv], {type:"text/csv"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "rider-upload-template.csv";
+    a.click();
+  };
+
+  const fileInput = document.getElementById("riderCsvInput");
+  document.getElementById("uploadRiderCsvBtn").onclick = ()=> fileInput.click();
+  fileInput.onchange = async ()=>{
+    const file = fileInput.files[0];
+    if(!file) return;
+    const text = await file.text();
+    const rows = parseRiderCsv(text);
+    const resultEl = document.getElementById("bulkRiderResult");
+    if(rows.length===0){ resultEl.innerHTML = `<div class="msg msg-danger">No valid rows found. Check the Phone/Hub/City columns.</div>`; fileInput.value=""; return; }
+    resultEl.innerHTML = `<div class="empty">Processing ${rows.length} row(s)…</div>`;
+    try{
+      const { results } = await api("/api/admin/bulk-riders", {method:"POST", body: JSON.stringify({rows})});
+      resultEl.innerHTML = `<table style="width:100%;font-size:12px;border-collapse:collapse">
+        <tr style="text-align:left;color:var(--muted)"><th>Phone</th><th>Status</th><th>PIN (new only)</th></tr>
+        ${results.map(r=>`<tr style="border-top:1px solid var(--border)">
+          <td>${escapeHtml(r.phone)}</td>
+          <td>${r.status==="created"?"🆕 Created":r.status==="updated"?"🔄 Updated":"❌ "+escapeHtml(r.reason||"error")}</td>
+          <td>${r.pin?escapeHtml(r.pin):"—"}</td>
+        </tr>`).join("")}
+      </table>
+      <p style="font-size:12px;color:var(--muted)">Send each new rider their phone number + PIN yourself (WhatsApp, SMS, etc.) — nothing is auto-sent.</p>`;
+      loadAllUsers();
+    }catch(e){ resultEl.innerHTML = `<div class="msg msg-danger">Upload failed — admin access required.</div>`; }
+    fileInput.value = "";
+  };
+}
+
+// Minimal CSV parser: header row required, matches Phone/Hub/City/Name
+// (case-insensitive), no quoted-comma support needed for this simple sheet.
+function parseRiderCsv(text){
+  const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+  if(lines.length<2) return [];
+  const headers = lines[0].split(",").map(h=>h.trim().toLowerCase());
+  const idx = { phone: headers.indexOf("phone"), name: headers.indexOf("name"), hub: headers.indexOf("hub"), city: headers.indexOf("city") };
+  if(idx.phone===-1 || idx.hub===-1 || idx.city===-1) return [];
+  return lines.slice(1).map(line=>{
+    const cols = line.split(",");
+    return {
+      phone: (cols[idx.phone]||"").trim(),
+      name: idx.name>-1 ? (cols[idx.name]||"").trim() : "",
+      hub: (cols[idx.hub]||"").trim(),
+      city: (cols[idx.city]||"").trim()
+    };
+  }).filter(r=>r.phone);
 }
 
 async function loadAdminAccounts(){
@@ -419,161 +466,33 @@ async function loadAllUsers(){
   });
 }
 
-// ---------------- ASSIGN CONTENT TO USERS ----------------
-let cachedAsgUsers = [];
-let assignSelectedContent = new Set();
-let assignSelectedUsers = new Set();
-
-async function renderAssignPanel(){
-  const el = document.getElementById("assignPanel");
-  el.innerHTML = `<div class="content-card">
-    <label>Persona</label>
-    <select class="field" id="asgPersona"></select>
-    <label>Content to assign (select one or more)</label>
-    <div id="asgContentList" style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:8px">Loading…</div>
-    <label>Search users by name or phone</label>
-    <input class="field" id="asgUserSearch" placeholder="Type to filter…">
-    <div id="asgUserList" style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:8px">Loading…</div>
-    <label>Completion deadline (optional — leave blank for no deadline)</label>
-    <input class="field" id="asgDueDate" type="date">
-    <button class="btn btn-primary btn-sm" id="asgSubmit" style="margin-top:6px">📌 Assign</button>
-    <div id="asgMsg"></div>
-  </div>
-  <div class="content-card">
-    <label>Or bulk-assign via spreadsheet upload (.xlsx or .csv)</label>
-    <p style="font-size:11px;color:var(--muted);margin:-2px 0 6px">Columns: <b>User Name</b>, <b>Phone</b>, <b>Topic / Module</b>, <b>Completion Date</b> (optional — blank means no deadline). Phone matches the user; Topic/Module is matched against that user's assigned role(s).</p>
-    <input class="field" type="file" id="asgBulkFile" accept=".xlsx,.xls,.csv">
-    <button class="btn btn-sm" id="asgBulkSubmit">⬆ Upload & Assign</button>
-    <div id="asgBulkResult"></div>
-  </div>`;
-
-  const personaSel = document.getElementById("asgPersona");
-  PERSONAS.forEach(p=>{ const o=document.createElement("option"); o.value=p; o.textContent=p; personaSel.appendChild(o); });
-  personaSel.onchange = loadAsgContent;
-  await loadAsgContent();
-
-  try{ cachedAsgUsers = await api("/api/admin/users"); }catch(e){ cachedAsgUsers = []; }
-  renderAsgUserList("");
-  document.getElementById("asgUserSearch").oninput = (e)=> renderAsgUserList(e.target.value);
-
-  document.getElementById("asgSubmit").onclick = async ()=>{
-    const msg = document.getElementById("asgMsg");
-    if(assignSelectedContent.size===0 || assignSelectedUsers.size===0){ msg.innerHTML=`<div class="msg msg-danger">Select at least one content item and one user.</div>`; return; }
-    const dueDateVal = document.getElementById("asgDueDate").value;
-    const dueDate = dueDateVal ? new Date(dueDateVal+"T23:59:59").getTime() : null;
-    try{
-      const result = await api("/api/admin/assign", {method:"POST", body: JSON.stringify({
-        contentIds: Array.from(assignSelectedContent),
-        uids: Array.from(assignSelectedUsers),
-        dueDate
-      })});
-      msg.innerHTML = `<div class="msg msg-ok">Assigned to ${result.assignedUsers.length} user(s): ${result.assignedUsers.map(u=>escapeHtml(u.name)).join(", ")}.</div>`;
-      assignSelectedContent.clear(); assignSelectedUsers.clear();
-      loadAsgContent(); renderAsgUserList(document.getElementById("asgUserSearch").value);
-    }catch(e){ msg.innerHTML=`<div class="msg msg-danger">Assignment failed.</div>`; }
-  };
-
-  document.getElementById("asgBulkSubmit").onclick = async ()=>{
-    const fileInput = document.getElementById("asgBulkFile");
-    const resEl = document.getElementById("asgBulkResult");
-    if(!fileInput.files[0]){ showToast("Choose a file first."); return; }
-    const fd = new FormData(); fd.append("file", fileInput.files[0]);
-    resEl.innerHTML = `<div class="msg">Processing…</div>`;
-    try{
-      const result = await apiUpload("/api/admin/assign-bulk-upload", fd);
-      let html = `<div class="msg msg-ok">Processed ${result.total} row(s) — assigned ${result.assigned}, skipped ${result.skipped.length}.</div>`;
-      if(result.skipped.length>0){
-        html += `<table><tr><th>Row</th><th>Name</th><th>Phone</th><th>Topic</th><th>Reason</th></tr>` +
-          result.skipped.map(s=>`<tr><td>${s.row}</td><td>${escapeHtml(s.name)}</td><td>${escapeHtml(s.phone)}</td><td>${escapeHtml(s.topic)}</td><td>${escapeHtml(s.reason)}</td></tr>`).join("") +
-          `</table>`;
-      }
-      resEl.innerHTML = html;
-    }catch(e){ resEl.innerHTML = `<div class="msg msg-danger">Upload failed.</div>`; }
-  };
-}
-
-async function loadAsgContent(){
-  const persona = document.getElementById("asgPersona").value;
-  const listEl = document.getElementById("asgContentList");
-  listEl.innerHTML = "Loading…";
-  let rows;
-  try{ rows = await api("/api/admin/content?persona="+encodeURIComponent(persona)); }
-  catch(e){ listEl.innerHTML = `<div class="empty">Could not load content.</div>`; return; }
-  if(rows.length===0){ listEl.innerHTML = `<div class="empty">No content for ${escapeHtml(persona)} yet.</div>`; return; }
-  listEl.innerHTML = "";
-  rows.forEach(({id,data:c})=>{
-    const row = document.createElement("label");
-    row.style.cssText = "display:flex;align-items:center;gap:6px;font-size:13px;margin:4px 0";
-    row.innerHTML = `<input type="checkbox" ${assignSelectedContent.has(id)?"checked":""}> <b>${escapeHtml(c.title)}</b> <span class="pill">${escapeHtml(c.topic||"General")}</span>`;
-    row.querySelector("input").onchange = (e)=>{ if(e.target.checked) assignSelectedContent.add(id); else assignSelectedContent.delete(id); };
-    listEl.appendChild(row);
-  });
-}
-
-function renderAsgUserList(filterText){
-  const listEl = document.getElementById("asgUserList");
-  if(!listEl) return;
-  const q = (filterText||"").trim().toLowerCase();
-  const filtered = cachedAsgUsers.filter(({data:p})=> !q || (p.name||"").toLowerCase().includes(q) || (p.phone||"").toLowerCase().includes(q));
-  if(filtered.length===0){ listEl.innerHTML = `<div class="empty">No matching users.</div>`; return; }
-  listEl.innerHTML = "";
-  filtered.forEach(({id,data:p})=>{
-    const row = document.createElement("label");
-    row.style.cssText = "display:flex;align-items:center;gap:6px;font-size:13px;margin:4px 0";
-    row.innerHTML = `<input type="checkbox" ${assignSelectedUsers.has(id)?"checked":""}> <b>${escapeHtml(p.name)}</b> <span style="color:var(--muted)">${escapeHtml(p.phone)} · ${escapeHtml((p.roles||[]).join(", "))}</span>`;
-    row.querySelector("input").onchange = (e)=>{ if(e.target.checked) assignSelectedUsers.add(id); else assignSelectedUsers.delete(id); };
-    listEl.appendChild(row);
-  });
-}
-
 async function loadAdminContent(){
   const el = document.getElementById("adminContentList");
   let rows;
   try{ rows = await api("/api/admin/content?persona="+encodeURIComponent(state.persona)); }
   catch(e){ el.innerHTML = `<div class="empty">Could not load content.</div>`; return; }
-
-  // Derive the topic list from content itself (in the order topics were
-  // first used) and keep "General" always available as a fallback.
-  const seen = [];
-  rows.forEach(({data:c})=>{ const t=(c.topic&&c.topic.trim())||"General"; if(!seen.includes(t)) seen.push(t); });
-  if(!seen.includes("General")) seen.push("General");
-  adminTopics = seen;
-  if(!state.topic || !adminTopics.includes(state.topic)) state.topic = adminTopics[0];
-  renderTopicTabs();
-  loadAdminQuestions();
-  loadAdminSubs();
-
   if(rows.length===0){ el.innerHTML=`<div class="empty">No content yet.</div>`; return; }
-
-  const groups = new Map();
-  rows.forEach(item=>{ const t=(item.data.topic&&item.data.topic.trim())||"General"; if(!groups.has(t)) groups.set(t,[]); groups.get(t).push(item); });
-  el.innerHTML = "";
-  groups.forEach((items, topic)=>{
-    const h = document.createElement("div");
-    h.style.cssText = "font-size:12px;font-weight:600;color:var(--muted);margin:14px 0 4px";
-    h.textContent = "📘 "+topic;
-    el.appendChild(h);
-    items.forEach(({id,data:c})=>{
-      const row = document.createElement("div");
-      row.className="content-card";
-      row.innerHTML = `<div class="row"><div><span class="tag">${(c.type||"link").toUpperCase()}</span>
-      <h3 style="margin:4px 0">${escapeHtml(c.title)}</h3></div>
-      <div class="top-actions">
-        <button class="btn btn-sm" data-e>Edit</button>
-        <button class="btn btn-sm btn-danger" data-d>Delete</button>
-      </div></div>`;
-      row.querySelector("[data-e]").onclick = ()=>openContentForm({id, data:()=>c});
-      row.querySelector("[data-d]").onclick = (e)=> armConfirm(e.target, async ()=>{
-        try{ await api("/api/admin/content/"+id, {method:"DELETE"}); showToast("Deleted."); loadAdminContent(); }
-        catch(err){ showToast("Delete failed — admin access required."); }
-      });
-      el.appendChild(row);
+  el.innerHTML="";
+  rows.forEach(({id,data:c})=>{
+    const row = document.createElement("div");
+    row.className="content-card";
+    row.innerHTML = `<div class="row"><div><span class="tag">${(c.type||"link").toUpperCase()}</span>
+    <h3 style="margin:4px 0">${escapeHtml(c.title)}</h3></div>
+    <div class="top-actions">
+      <button class="btn btn-sm" data-e>Edit</button>
+      <button class="btn btn-sm btn-danger" data-d>Delete</button>
+    </div></div>`;
+    row.querySelector("[data-e]").onclick = ()=>openContentForm({id, data:()=>c});
+    row.querySelector("[data-d]").onclick = (e)=> armConfirm(e.target, async ()=>{
+      try{ await api("/api/admin/content/"+id, {method:"DELETE"}); showToast("Deleted."); loadAdminContent(); }
+      catch(err){ showToast("Delete failed — admin access required."); }
     });
+    el.appendChild(row);
   });
 }
 
 function openContentForm(doc){
-  const c = doc ? doc.data() : {type:"ppt",title:"",description:"",url:"",topic: (state.topic && state.topic!=="General") ? state.topic : ""};
+  const c = doc ? doc.data() : {type:"ppt",title:"",description:"",url:""};
   const wrap = document.createElement("div");
   wrap.className="content-card";
   wrap.innerHTML = `
@@ -584,10 +503,6 @@ function openContentForm(doc){
     <option value="doc">Document</option>
     <option value="link">Link</option>
   </select>
-  <label>Topic / Module</label>
-  <input class="field" id="cTopic" list="topicSuggestions" placeholder="e.g. Module 1: Safety Basics (leave blank for General)" value="${escapeAttr(c.topic||"")}">
-  <datalist id="topicSuggestions">${adminTopics.map(t=>`<option value="${escapeAttr(t)}">`).join("")}</datalist>
-  <p style="font-size:11px;color:var(--muted);margin:-2px 0 6px">Content sharing a topic is grouped together for staff and unlocks one shared assessment once all of it is completed.</p>
   <label>Title</label><input class="field" id="cTitle" value="${escapeAttr(c.title)}">
   <label>Description</label><input class="field" id="cDesc" value="${escapeAttr(c.description)}">
   <label>URL (external link, or leave blank and upload a file below)</label>
@@ -596,7 +511,6 @@ function openContentForm(doc){
   <input class="field" type="file" id="cFile">
   <div id="cDurationWrap" class="hidden">
     <label>Required watch time before staff can mark this video complete (minutes) *</label>
-    <p style="font-size:11px;color:var(--muted);margin:2px 0 6px">seconds ÷ 60 = minutes (e.g. 24 sec ÷ 60 = 0.4)</p>
     <input class="field" id="cDuration" type="number" min="0.5" step="0.5" value="${c.requiredMinutes||""}">
     <p style="font-size:11px;color:var(--muted)">Staff must accumulate this much actual playing time — pauses and seek-ahead don't count toward it — before "Mark as completed" becomes clickable for them.</p>
   </div>
@@ -634,7 +548,6 @@ function openContentForm(doc){
     const data = {
       persona: state.persona,
       type,
-      topic: wrap.querySelector("#cTopic").value.trim() || "General",
       title: wrap.querySelector("#cTitle").value.trim()||"Untitled",
       description: wrap.querySelector("#cDesc").value.trim(),
       url,
@@ -651,12 +564,12 @@ function openContentForm(doc){
 
 async function loadAdminQuestions(){
   const el = document.getElementById("adminQList");
-  if(!el) return;
-  el.innerHTML = "Loading…";
-  let qs;
-  try{ const j = await api("/api/admin/questions?persona="+encodeURIComponent(state.persona)+"&topic="+encodeURIComponent(state.topic)); qs = j.questions; }
+  let qs, passScore;
+  try{ const j = await api("/api/admin/questions?persona="+encodeURIComponent(state.persona)); qs = j.questions; passScore = j.passScore; }
   catch(e){ el.innerHTML=`<div class="empty">Could not load questions.</div>`; return; }
-  if(qs.length===0){ el.innerHTML=`<div class="empty">No questions yet for "${escapeHtml(state.topic)}".</div>`; return; }
+  const psInput = document.getElementById("passScoreInput");
+  if(psInput) psInput.value = passScore != null ? passScore : 80;
+  if(qs.length===0){ el.innerHTML=`<div class="empty">No questions yet.</div>`; return; }
   el.innerHTML="";
   qs.forEach((q,i)=>{
     const row = document.createElement("div");
@@ -664,11 +577,11 @@ async function loadAdminQuestions(){
     const isMcq = q.type==="mcq" && Array.isArray(q.options);
     row.innerHTML = `<div style="flex:1;min-width:200px">
       <div>${i+1}. ${escapeHtml(q.text)} ${isMcq?'<span class="pill">multiple choice</span>':'<span class="pill">free text</span>'}</div>
-      ${isMcq ? `<div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:6px">${q.options.map(o=> o===q.correctAnswer ? `<span class="tag" style="background:#e6f6ec;color:var(--ok)">✅ ${escapeHtml(o)}</span>` : `<span class="tag">${escapeHtml(o)}</span>`).join("")}</div>` : ""}
+      ${isMcq ? `<div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:6px">${q.options.map(o=>`<span class="tag"${o===q.correct?' style="background:#e6f6ec;color:var(--ok)"':''}>${escapeHtml(o)}${o===q.correct?' ✓':''}</span>`).join("")}</div>` : ""}
     </div>
     <button class="btn btn-sm btn-danger">Remove</button>`;
     row.querySelector("button").onclick = async ()=>{
-      try{ await api("/api/admin/questions/"+q.id+"?persona="+encodeURIComponent(state.persona)+"&topic="+encodeURIComponent(state.topic), {method:"DELETE"}); loadAdminQuestions(); }
+      try{ await api("/api/admin/questions/"+encodeURIComponent(state.persona)+"/"+q.id, {method:"DELETE"}); loadAdminQuestions(); }
       catch(e){ showToast("Remove failed."); }
     };
     el.appendChild(row);
@@ -681,7 +594,7 @@ function openQuestionForm(){
   const wrap = document.createElement("div");
   wrap.className="content-card";
   wrap.id="qFormBox";
-  wrap.innerHTML = `<label>New question for "${escapeHtml(state.topic)}"</label>
+  wrap.innerHTML = `<label>New assessment question</label>
   <input class="field" id="qText" placeholder="Enter the question text">
   <label>Answer type</label>
   <select class="field" id="qType">
@@ -689,9 +602,11 @@ function openQuestionForm(){
     <option value="mcq">Multiple choice (staff pick one option)</option>
   </select>
   <div id="qOptionsWrap" class="hidden">
-    <label>Options (at least 2) — mark the radio next to the correct one</label>
+    <label>Options (at least 2)</label>
     <div id="qOptionsList"></div>
     <button class="btn btn-sm" id="qAddOption" type="button">＋ Add option</button>
+    <label>Correct option</label>
+    <select class="field" id="qCorrect"></select>
   </div>
   <div class="top-actions" style="margin-top:10px">
     <button class="btn btn-primary btn-sm" id="qSave">Add</button>
@@ -701,36 +616,37 @@ function openQuestionForm(){
   const typeSel = wrap.querySelector("#qType");
   const optsWrap = wrap.querySelector("#qOptionsWrap");
   const optsList = wrap.querySelector("#qOptionsList");
-  function addOptionInput(val, isCorrect){
-    const row = document.createElement("div");
-    row.style.cssText = "display:flex;gap:8px;align-items:center";
-    row.innerHTML = `<input type="radio" name="qCorrectOpt" data-correct title="Mark as the correct answer" ${isCorrect?"checked":""}>
-      <input class="field" data-opt style="margin:4px 0" value="${escapeAttr(val||"")}">
-      <button class="btn btn-sm" type="button" data-remove>✕</button>`;
-    row.querySelector("[data-remove]").onclick = ()=>{ if(optsList.children.length>2) row.remove(); else showToast("At least 2 options are required."); };
-    optsList.appendChild(row);
+  const correctSel = wrap.querySelector("#qCorrect");
+  function refreshCorrectOptions(){
+    const vals = Array.from(optsList.querySelectorAll("[data-opt]")).map(i=>i.value.trim()).filter(Boolean);
+    const prevVal = correctSel.value;
+    correctSel.innerHTML = vals.map(v=>`<option value="${escapeAttr(v)}">${escapeHtml(v)}</option>`).join("");
+    if(vals.includes(prevVal)) correctSel.value = prevVal;
   }
-  addOptionInput("", true); addOptionInput("", false);
+  function addOptionInput(val){
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;gap:6px;align-items:center";
+    row.innerHTML = `<input class="field" data-opt style="margin:4px 0" value="${escapeAttr(val||"")}"><button class="btn btn-sm" type="button" data-remove>✕</button>`;
+    row.querySelector("[data-remove]").onclick = ()=>{ if(optsList.children.length>2) row.remove(); else showToast("At least 2 options are required."); refreshCorrectOptions(); };
+    row.querySelector("[data-opt]").oninput = refreshCorrectOptions;
+    optsList.appendChild(row);
+    refreshCorrectOptions();
+  }
+  addOptionInput(""); addOptionInput("");
   typeSel.onchange = ()=> optsWrap.classList.toggle("hidden", typeSel.value!=="mcq");
-  wrap.querySelector("#qAddOption").onclick = ()=> addOptionInput("", false);
+  wrap.querySelector("#qAddOption").onclick = ()=> addOptionInput("");
   document.getElementById("qCancel").onclick = ()=>wrap.remove();
   document.getElementById("qSave").onclick = async ()=>{
     const text = document.getElementById("qText").value.trim();
     if(!text){ showToast("Enter a question first."); return; }
     const type = typeSel.value;
-    const payload = { persona: state.persona, topic: state.topic, text, type };
+    const payload = { persona: state.persona, text, type };
     if(type==="mcq"){
-      const options = [];
-      let correctAnswer = null;
-      Array.from(optsList.children).forEach(row=>{
-        const val = row.querySelector("[data-opt]").value.trim();
-        const isChecked = row.querySelector("[data-correct]").checked;
-        if(val){ options.push(val); if(isChecked) correctAnswer = val; }
-      });
+      const options = Array.from(optsList.querySelectorAll("[data-opt]")).map(i=>i.value.trim()).filter(Boolean);
       if(options.length<2){ showToast("Enter at least 2 non-empty options."); return; }
-      if(!correctAnswer){ showToast("Mark which option is the correct answer."); return; }
+      if(!correctSel.value){ showToast("Pick the correct option."); return; }
       payload.options = options;
-      payload.correctAnswer = correctAnswer;
+      payload.correct = correctSel.value;
     }
     try{
       await api("/api/admin/questions", {method:"POST", body: JSON.stringify(payload)});
@@ -742,18 +658,15 @@ function openQuestionForm(){
 
 async function loadAdminSubs(){
   const el = document.getElementById("adminSubs");
-  if(!el) return;
-  el.innerHTML = "Loading…";
   let rows;
-  try{ rows = await api("/api/admin/submissions?persona="+encodeURIComponent(state.persona)+"&topic="+encodeURIComponent(state.topic)); }
+  try{ rows = await api("/api/admin/submissions?persona="+encodeURIComponent(state.persona)); }
   catch(e){ el.innerHTML=`<div class="empty">Could not load submissions.</div>`; return; }
-  if(rows.length===0){ el.innerHTML=`<div class="empty">No submissions yet for "${escapeHtml(state.topic)}".</div>`; return; }
+  if(rows.length===0){ el.innerHTML=`<div class="empty">No submissions yet.</div>`; return; }
   let bodyRows = "";
   rows.forEach(s=>{
-    const scoreText = s.score ? `${s.score.correct}/${s.score.total}` : "—";
-    bodyRows += `<tr><td>${s.uid?s.uid.slice(0,10):"?"}…</td><td>${new Date(s.submittedAt).toLocaleString()}</td><td>${Object.keys(s.answers||{}).length}</td><td>${scoreText}</td></tr>`;
+    bodyRows += `<tr><td>${s.uid?s.uid.slice(0,10):"?"}…</td><td>${new Date(s.submittedAt).toLocaleString()}</td><td>${Object.keys(s.answers||{}).length}</td></tr>`;
   });
-  el.innerHTML = `<table><tr><th>Viewer</th><th>Submitted</th><th>Answers</th><th>Score</th></tr>${bodyRows}</table>`;
+  el.innerHTML = `<table><tr><th>Viewer</th><th>Submitted</th><th>Answers</th></tr>${bodyRows}</table>`;
 }
 
 function escapeHtml(s){ return (s==null?"":String(s)).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
