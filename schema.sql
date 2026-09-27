@@ -218,3 +218,35 @@ alter table admins add column if not exists updated_at bigint;
 -- The bootstrap Super Admin account (Superadmin / 1111) is seeded by
 -- server.js on startup, not here — it needs bcryptjs to hash the PIN
 -- properly, which SQL can't do on its own.
+
+-- =========================================================
+-- MIGRATION (4) — Deploy 2 (Phase 3+4): tagged-person CSV approval,
+-- RM admin-tier verification, dynamic registration form fields. Safe to
+-- re-run.
+-- =========================================================
+-- 'admin_pending' sits between approval and full admin access for
+-- Regional Managers — Super Admin still has to separately verify them
+-- (everyone else's access_tier activates automatically on approval).
+-- No schema change needed for that — it's just another value in the
+-- existing profiles.access_tier text column.
+
+create table if not exists form_fields (
+  id uuid primary key default gen_random_uuid(),
+  field_key text unique not null, -- machine key, e.g. "emergency_contact"
+  label text not null,            -- shown on the registration form
+  type text not null default 'text', -- 'text' | 'number' | 'dropdown' | 'date'
+  options jsonb default '[]',     -- for type = 'dropdown'
+  required boolean not null default false,
+  sort_order int not null default 0,
+  created_at bigint not null
+);
+alter table form_fields enable row level security;
+
+-- Custom field answers, keyed by field_key -> value. Kept even if the
+-- field definition is later renamed/removed, so old submissions never
+-- silently lose data.
+alter table registrations add column if not exists custom_fields jsonb not null default '{}';
+alter table profiles add column if not exists custom_fields jsonb not null default '{}';
+
+alter table admins add column if not exists phone text;
+alter table admins add column if not exists email text;

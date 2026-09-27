@@ -239,6 +239,50 @@ async function loadHubMapping(){
   if(!hubMappingCache){ try{ hubMappingCache = await api("/api/hub-mapping"); }catch(e){ hubMappingCache = []; } }
   return hubMappingCache;
 }
+// Admin-defined extra registration fields (Super Admin's Form Builder).
+// Rendered into whichever container div is passed, values read back the
+// same way, on both the regular and Regional Manager registration forms.
+let formFieldsCache = null;
+async function loadFormFields(){
+  if(!formFieldsCache){ try{ formFieldsCache = await api("/api/form-fields"); }catch(e){ formFieldsCache = []; } }
+  return formFieldsCache;
+}
+async function renderCustomFieldsInto(containerId, existingValues){
+  const container = document.getElementById(containerId);
+  if(!container) return;
+  const fields = await loadFormFields();
+  const vals = existingValues || {};
+  container.innerHTML = fields.map(f=>{
+    const val = vals[f.fieldKey] || "";
+    const reqStar = f.required ? " *" : "";
+    if(f.type==="dropdown"){
+      return `<label>${escapeHtml(f.label)}${reqStar}</label><select class="field" data-custom-field="${escapeAttr(f.fieldKey)}">
+        <option value=""></option>
+        ${f.options.map(o=>`<option value="${escapeAttr(o)}" ${o===val?"selected":""}>${escapeHtml(o)}</option>`).join("")}
+      </select>`;
+    }
+    const inputType = f.type==="number" ? "number" : f.type==="date" ? "date" : "text";
+    return `<label>${escapeHtml(f.label)}${reqStar}</label><input class="field" type="${inputType}" data-custom-field="${escapeAttr(f.fieldKey)}" value="${escapeAttr(val)}">`;
+  }).join("");
+}
+function collectCustomFieldValues(containerId){
+  const container = document.getElementById(containerId);
+  if(!container) return {};
+  const out = {};
+  container.querySelectorAll("[data-custom-field]").forEach(el=>{ out[el.dataset.customField] = el.value.trim(); });
+  return out;
+}
+function validateRequiredCustomFields(containerId, msgEl){
+  const container = document.getElementById(containerId);
+  if(!container) return true;
+  let ok = true;
+  container.querySelectorAll("[data-custom-field]").forEach(el=>{
+    const label = el.previousElementSibling ? el.previousElementSibling.textContent : el.dataset.customField;
+    if(label.trim().endsWith("*") && !el.value.trim()) ok = false;
+  });
+  if(!ok) msgEl.innerHTML = `<div class="msg msg-danger">Please fill in all required fields.</div>`;
+  return ok;
+}
 // Reusable typeahead: only matching names are shown as you type. Used
 // here for "Reporting To"; the same pattern is used in the admin panel
 // wherever a user is searched.
@@ -286,11 +330,13 @@ function renderRegister(prefill){
     <datalist id="rHubList"></datalist>
     <label>Set a 4-digit PIN (for logging in on shared/kiosk devices) *</label>
     <input class="field" id="rPin" maxlength="4" inputmode="numeric" placeholder="e.g. 4821" value="${escapeAttr(d.pin)}">
+    <div id="rCustomFields"></div>
     <button class="btn btn-primary" id="rSubmit" style="width:100%;margin-top:8px">Submit for Approval</button>
     <div id="rMsg"></div>
     <p style="text-align:center;margin-top:10px"><a href="#" id="rmLink" style="font-size:12px;color:var(--muted)">Registering as a Regional Manager? Register here instead</a></p>
   </div>`;
 
+  renderCustomFieldsInto("rCustomFields", d.customFields);
   const sel = document.getElementById("rRole");
   PERSONAS.filter(p=>p!=="Regional Manager").forEach(p=>{ const o=document.createElement("option"); o.value=p; o.textContent=p; if(p===d.role) o.selected=true; sel.appendChild(o); });
   document.getElementById("rmLink").onclick = (e)=>{ e.preventDefault(); state={view:"registerRM"}; render(); };
@@ -330,7 +376,8 @@ function renderRegister(prefill){
       city: document.getElementById("rCity").value.trim(),
       hub: document.getElementById("rHub").value.trim(),
       role: sel.value,
-      pin, taggedTo
+      pin, taggedTo,
+      customFields: collectCustomFieldValues("rCustomFields")
     };
     if(!data.name || !data.phone || !data.email || !data.hub || !data.city){
       msgEl.innerHTML=`<div class="msg msg-danger">All fields are required.</div>`; return;
@@ -339,6 +386,7 @@ function renderRegister(prefill){
     if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)){ msgEl.innerHTML=`<div class="msg msg-danger">Enter a valid email address (e.g. name@company.com).</div>`; return; }
     if(!/^\d{7,15}$/.test(data.phone.replace(/[\s\-+]/g,""))){ msgEl.innerHTML=`<div class="msg msg-danger">Enter a valid mobile number.</div>`; return; }
     if(!/^\d{4}$/.test(pin)){ msgEl.innerHTML=`<div class="msg msg-danger">PIN must be exactly 4 digits.</div>`; return; }
+    if(!validateRequiredCustomFields("rCustomFields", msgEl)) return;
     try{
       const saved = await api("/api/register", {method:"POST", body: JSON.stringify(data)});
       state={view:"pending", reg:saved}; render();
@@ -364,10 +412,12 @@ function renderRegisterRM(prefill){
     <datalist id="rmHubList"></datalist>
     <label>Set a 4-digit PIN *</label>
     <input class="field" id="rmPin" maxlength="4" inputmode="numeric" value="${escapeAttr(d.pin)}">
+    <div id="rmCustomFields"></div>
     <button class="btn btn-primary" id="rmSubmit" style="width:100%;margin-top:8px">Submit for Super Admin Approval</button>
     <div id="rmMsg"></div>
     <p style="text-align:center;margin-top:10px"><a href="#" id="backLink" style="font-size:12px;color:var(--muted)">Back to regular registration</a></p>
   </div>`;
+  renderCustomFieldsInto("rmCustomFields", d.customFields);
   document.getElementById("backLink").onclick = (e)=>{ e.preventDefault(); state={view:"register"}; render(); };
   loadHubMapping().then(mapping=>{
     const cities = [...new Set(mapping.map(m=>m.city))];
@@ -394,12 +444,14 @@ function renderRegisterRM(prefill){
       city: document.getElementById("rmCity").value.trim(),
       hub: document.getElementById("rmHub").value.trim(),
       role: "Regional Manager",
-      pin
+      pin,
+      customFields: collectCustomFieldValues("rmCustomFields")
     };
     if(!data.name || !data.phone || !data.email || !data.hub || !data.city){ msgEl.innerHTML=`<div class="msg msg-danger">All fields are required.</div>`; return; }
     if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)){ msgEl.innerHTML=`<div class="msg msg-danger">Enter a valid email address.</div>`; return; }
     if(!/^\d{7,15}$/.test(data.phone.replace(/[\s\-+]/g,""))){ msgEl.innerHTML=`<div class="msg msg-danger">Enter a valid mobile number.</div>`; return; }
     if(!/^\d{4}$/.test(pin)){ msgEl.innerHTML=`<div class="msg msg-danger">PIN must be exactly 4 digits.</div>`; return; }
+    if(!validateRequiredCustomFields("rmCustomFields", msgEl)) return;
     try{
       const saved = await api("/api/register", {method:"POST", body: JSON.stringify(data)});
       state={view:"pending", reg:saved}; render();
@@ -462,12 +514,91 @@ async function renderPersona(){
   <div class="top-actions">
     <button class="btn btn-sm" id="wrongRole">${state.kiosk?"Not you? Logout":"Wrong role? Request change"}</button>
   </div></div>
+  <div id="myTeamSection"></div>
   <p style="color:var(--muted);font-size:12px;margin-top:-4px">Content is grouped by module below. Finish everything in a module to unlock its assessment.</p>
   <div id="assignedSection"></div>
   <div id="topicGroups">Loading…</div>`;
   document.getElementById("wrongRole").onclick = ()=> state.kiosk ? logout() : renderRegister(state.profile);
+  renderMyTeamSection();
   await loadContentAndProgress(p);
   loadAndRenderAssigned();
+}
+
+// ---------------- MY TEAM & APPROVALS (Semi Admin / Admin tiers) ----------------
+// Hub Manager and above / City Lead: their directly-tagged reports.
+// Regional Manager (once Super-Admin-verified): the full downstream tree.
+// Scanner/Team Leader (View tier) get nothing here — read-only by design.
+async function renderMyTeamSection(){
+  const el = document.getElementById("myTeamSection");
+  if(!el) return;
+  const tier = state.profile?.accessTier;
+  if(!tier || tier==="view"){ el.innerHTML=""; return; }
+  if(tier==="admin_pending"){
+    el.innerHTML = `<div class="msg msg-warn" style="margin-bottom:12px">⏳ Your Regional Manager admin access is awaiting Super Admin verification. Once verified, you'll see your team and pending approvals here.</div>`;
+    return;
+  }
+  el.innerHTML = `<div class="content-card" style="margin-bottom:14px">
+    <div class="section-title" style="margin-top:0">👥 Pending Approvals${tier==="admin"?" (your team)":""}</div>
+    <div id="myApprovalsList">Loading…</div>
+    <div class="top-actions" style="margin-top:8px">
+      <button class="btn btn-sm" id="dlApprovalsBtn">⬇ Download pending (CSV)</button>
+      <input class="field" type="file" id="approvalsUploadFile" accept=".xlsx,.xls,.csv" style="max-width:220px">
+      <button class="btn btn-sm btn-primary" id="ulApprovalsBtn">⬆ Upload (Status=Approved)</button>
+    </div>
+    <div id="approvalsUploadResult"></div>
+    <div class="section-title">My Team</div>
+    <div id="myTeamList">Loading…</div>
+  </div>`;
+  loadMyApprovals();
+  loadMyTeamList();
+  document.getElementById("dlApprovalsBtn").onclick = async ()=>{
+    try{
+      const pending = await api("/api/my-pending-approvals?uid="+encodeURIComponent(currentUid()));
+      const csv = "User Name,Phone,Hub,Status\r\n"+pending.map(r=>`${r.name},${r.phone},${r.hub},Pending`).join("\r\n")+"\r\n";
+      const blob = new Blob([csv], {type:"text/csv"});
+      const a = document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="my-pending-approvals.csv"; a.click();
+    }catch(e){ showToast("Could not download."); }
+  };
+  document.getElementById("ulApprovalsBtn").onclick = async ()=>{
+    const fileInput = document.getElementById("approvalsUploadFile");
+    const resEl = document.getElementById("approvalsUploadResult");
+    if(!fileInput.files[0]){ showToast("Choose a file first."); return; }
+    const fd = new FormData(); fd.append("file", fileInput.files[0]); fd.append("uid", currentUid());
+    resEl.innerHTML = `<div class="msg">Processing…</div>`;
+    try{
+      const res = await fetch(API+"/api/my-pending-approvals/upload", {method:"POST", body:fd});
+      const json = await res.json();
+      resEl.innerHTML = `<table>${(json.results||[]).map(r=>`<tr><td>${escapeHtml(r.phone)}</td><td>${r.status==="approved"?"✅ Approved":r.status==="skipped"?"— Skipped":"❌ "+escapeHtml(r.reason||"error")}</td></tr>`).join("")}</table>`;
+      loadMyApprovals();
+    }catch(e){ resEl.innerHTML = `<div class="msg msg-danger">Upload failed.</div>`; }
+    fileInput.value="";
+  };
+}
+async function loadMyApprovals(){
+  const el = document.getElementById("myApprovalsList");
+  try{
+    const pending = await api("/api/my-pending-approvals?uid="+encodeURIComponent(currentUid()));
+    el.innerHTML = pending.length===0 ? `<div class="empty">No pending approvals.</div>` :
+      pending.map(r=>`<div style="font-size:13px;padding:4px 0;border-bottom:1px solid var(--border)"><b>${escapeHtml(r.name)}</b> — ${escapeHtml(r.phone)} · ${escapeHtml(r.role)} · ${escapeHtml(r.hub)}</div>`).join("");
+  }catch(e){ el.innerHTML = `<div class="empty">Could not load.</div>`; }
+}
+async function loadMyTeamList(){
+  const el = document.getElementById("myTeamList");
+  try{
+    const { team } = await api("/api/my-team?uid="+encodeURIComponent(currentUid()));
+    el.innerHTML = team.length===0 ? `<div class="empty">No one tagged to you yet.</div>` :
+      team.map(({id,data:p})=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;padding:4px 0;border-bottom:1px solid var(--border)">
+        <span><b>${escapeHtml(p.name)}</b> — ${escapeHtml(p.primaryRole||"")} · ${escapeHtml(p.hub||"")}</span>
+        <button class="btn btn-sm btn-danger" data-revoke="${escapeAttr(id)}">Revoke</button>
+      </div>`).join("");
+    el.querySelectorAll("[data-revoke]").forEach(btn=>{
+      btn.onclick = async ()=>{
+        if(!confirm("Revoke this user's access?")) return;
+        try{ await api("/api/my-team/"+btn.dataset.revoke+"/revoke", {method:"POST", body: JSON.stringify({uid: currentUid()})}); loadMyTeamList(); }
+        catch(e){ showToast("Could not revoke."); }
+      };
+    });
+  }catch(e){ el.innerHTML = `<div class="empty">Could not load team.</div>`; }
 }
 
 async function loadContentAndProgress(p){

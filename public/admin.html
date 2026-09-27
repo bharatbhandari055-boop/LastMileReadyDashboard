@@ -248,37 +248,41 @@ function renderAdminChangePassword(){
   };
 }
 
-// ---------------- ADMIN PANEL ----------------
+// ---------------- ADMIN PANEL: 5 tabs ----------------
 async function renderAdmin(){
   crumbSub.textContent = "Logged in as "+(adminSession.username||"admin");
   if(!PERSONAS.includes(state.persona)) state.persona = PERSONAS[0];
+  if(!state.adminTab) state.adminTab = "training";
 
-  app.innerHTML = `<div class="section-title">Admin Accounts</div>
-  <div id="adminAccounts">Loading…</div>
-  <div class="section-title">City ↔ Hub / DC / FC Mapping</div>
-  <p style="color:var(--muted);font-size:12px;margin-top:-4px">Shared by registration and by the dashboards below. Changes apply immediately — no redeploy.</p>
-  <div id="hubMappingPanel">Loading…</div>
-  <div class="section-title">Tagging</div>
-  <p style="color:var(--muted);font-size:12px;margin-top:-4px">Who reports to whom (Scanner → Team Leader / Hub Manager and above / City Lead / Regional Manager, and so on up the chain). Set at registration; adjustable here, plus bulk upload.</p>
-  <div id="taggingPanel">Loading…</div>
-  <div class="section-title">Completion overview</div>
-  <div id="statsPanel"></div>
-  <div class="section-title">Pending Registrations</div>
-  <div id="adminRegs">Loading…</div>
-  <div class="section-title">Currently Assigned Users</div>
-  <div id="adminAllUsers">Loading…</div>
-  <div class="section-title">Assign Content to Users</div>
-  <div id="assignPanel">Loading…</div>
-  <div class="grid" id="adminTabs"></div>
+  app.innerHTML = `<div class="grid" id="mainTabs" style="margin-bottom:14px"></div><div id="mainTabBody"></div>`;
+  const tabs = [
+    ["training","🎓 Add Training Content"],
+    ["assign","📌 Assign Task"],
+    ["tagging","🏷️ Tagging"],
+    ["registration","📝 Registration"],
+    ["access","🔐 Access"]
+  ];
+  const tabsEl = document.getElementById("mainTabs");
+  tabs.forEach(([key,label])=>{
+    const b = document.createElement("button");
+    b.className = "btn"+(state.adminTab===key?" btn-primary":"");
+    b.textContent = label;
+    b.onclick = ()=>{ state.adminTab=key; renderAdmin(); };
+    tabsEl.appendChild(b);
+  });
+
+  const body = document.getElementById("mainTabBody");
+  if(state.adminTab==="training") renderAddTrainingTab(body);
+  else if(state.adminTab==="assign") renderAssignTaskTab(body);
+  else if(state.adminTab==="tagging") renderTaggingTab(body);
+  else if(state.adminTab==="registration") renderRegistrationTab(body);
+  else if(state.adminTab==="access") renderAccessTab(body);
+}
+
+// ---------------- TAB: Add Training Content ----------------
+function renderAddTrainingTab(body){
+  body.innerHTML = `<div class="grid" id="adminTabs"></div>
   <div id="adminBody"></div>`;
-
-  loadAdminAccounts();
-  renderHubMappingPanel();
-  renderTaggingPanel();
-  renderStatsPanel();
-  loadAdminRegs();
-  loadAllUsers();
-  renderAssignPanel();
   const tabs = document.getElementById("adminTabs");
   PERSONAS.forEach(p=>{
     const b = document.createElement("button");
@@ -308,6 +312,223 @@ async function renderAdmin(){
   document.getElementById("addQBtn").onclick = ()=>openQuestionForm();
   wirePassScoreSave();
   loadAdminContent();
+}
+
+// ---------------- TAB: Assign Task ----------------
+async function renderAssignTaskTab(body){
+  body.innerHTML = `<div class="section-title" style="margin-top:0">Users</div>
+  <div id="userRatioCard" class="content-card">Loading…</div>
+  <div class="section-title">Completion overview</div>
+  <div id="statsPanel"></div>
+  <div class="section-title">Currently Assigned Users</div>
+  <div id="adminAllUsers">Loading…</div>
+  <div class="section-title">Assign Content to Users</div>
+  <div id="assignPanel">Loading…</div>`;
+  loadUserRatio();
+  renderStatsPanel();
+  loadAllUsers();
+  renderAssignPanel();
+}
+async function loadUserRatio(){
+  const el = document.getElementById("userRatioCard");
+  try{
+    const rows = await api("/api/admin/users");
+    const total = rows.length;
+    const now = Date.now();
+    const active = rows.filter(({data:p})=> p.lastLogin && (now-p.lastLogin) <= (1000*60*60*24*30*6)).length;
+    const inactive = total - active;
+    const pct = n => total>0 ? Math.round((n/total)*100) : 0;
+    el.innerHTML = `<div style="display:flex;gap:24px;flex-wrap:wrap">
+      <div><div style="font-size:22px;font-weight:700">${total}</div><div style="color:var(--muted);font-size:12px">Total Users</div></div>
+      <div><div style="font-size:22px;font-weight:700;color:var(--ok)">${active} (${pct(active)}%)</div><div style="color:var(--muted);font-size:12px">Active</div></div>
+      <div><div style="font-size:22px;font-weight:700;color:var(--danger)">${inactive} (${pct(inactive)}%)</div><div style="color:var(--muted);font-size:12px">Inactive</div></div>
+    </div>`;
+  }catch(e){ el.innerHTML = `<div class="empty">Could not load.</div>`; }
+}
+
+// ---------------- TAB: Tagging ----------------
+function renderTaggingTab(body){
+  body.innerHTML = `<div class="section-title" style="margin-top:0">Tagging</div>
+  <p style="color:var(--muted);font-size:12px;margin-top:-4px">Who reports to whom (Scanner → Team Leader / Hub Manager and above / City Lead / Regional Manager, and so on up the chain). Set at registration; bulk-adjustable here.</p>
+  <div id="taggingPanel">Loading…</div>`;
+  renderTaggingPanel();
+}
+
+// ---------------- TAB: Registration ----------------
+async function renderRegistrationTab(body){
+  body.innerHTML = `<div class="section-title" style="margin-top:0">Pending Registrations</div>
+  <div class="content-card">
+    <div class="row">
+      <div><label>Filter by city</label><select class="field" id="regCityFilter" style="min-width:160px"><option value="">All cities</option></select></div>
+    </div>
+    <div class="top-actions" style="margin-top:8px">
+      <button class="btn btn-sm" id="dlRegCsvBtn">⬇ Download pending (CSV)</button>
+      <input class="field" type="file" id="regUploadFile" accept=".xlsx,.xls,.csv" style="max-width:220px">
+      <button class="btn btn-sm btn-primary" id="ulRegCsvBtn">⬆ Upload (Status=Approved)</button>
+    </div>
+    <div id="regCsvResult"></div>
+  </div>
+  <div id="adminRegs">Loading…</div>`;
+  try{
+    const mapping = await loadAdminHubMapping();
+    const citySel = document.getElementById("regCityFilter");
+    [...new Set(mapping.map(m=>m.city))].forEach(c=>{ const o=document.createElement("option"); o.value=c; o.textContent=c; citySel.appendChild(o); });
+    citySel.onchange = ()=> loadAdminRegs(citySel.value);
+  }catch(e){}
+  document.getElementById("dlRegCsvBtn").onclick = ()=>{
+    fetch(API+"/api/admin/registrations/export-csv", {headers:{Authorization:"Bearer "+adminSession.token}})
+      .then(r=>r.blob()).then(blob=>{
+        const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="pending-registrations.csv"; a.click();
+      }).catch(()=>showToast("Download failed."));
+  };
+  document.getElementById("ulRegCsvBtn").onclick = async ()=>{
+    const fileInput = document.getElementById("regUploadFile");
+    const resEl = document.getElementById("regCsvResult");
+    if(!fileInput.files[0]){ showToast("Choose a file first."); return; }
+    const fd = new FormData(); fd.append("file", fileInput.files[0]);
+    resEl.innerHTML = `<div class="msg">Processing…</div>`;
+    try{
+      const { results } = await apiUpload("/api/admin/registrations/upload-csv", fd);
+      resEl.innerHTML = `<table>${results.map(r=>`<tr><td>${escapeHtml(r.phone)}</td><td>${r.status==="approved"?"✅ Approved":r.status==="skipped"?"— Skipped":"❌ "+escapeHtml(r.reason||"error")}</td></tr>`).join("")}</table>`;
+      loadAdminRegs();
+    }catch(e){ resEl.innerHTML = `<div class="msg msg-danger">Upload failed.</div>`; }
+    fileInput.value = "";
+  };
+  loadAdminRegs();
+}
+
+// ---------------- TAB: Access ----------------
+async function renderAccessTab(body){
+  const isSuperAdmin = adminSession.tier === "super_admin";
+  body.innerHTML = `<div class="section-title" style="margin-top:0">Admin Accounts</div>
+  <div id="adminAccounts">Loading…</div>
+  <div class="section-title">Regional Manager Admin-Access Verification</div>
+  <p style="color:var(--muted);font-size:12px;margin-top:-4px">Regional Managers get full admin (tree) access only after Super Admin verifies them here.</p>
+  <div id="rmVerifyList">Loading…</div>
+  <div class="section-title">User Access Tiers</div>
+  <p style="color:var(--muted);font-size:12px;margin-top:-4px">Auto-assigned by persona on approval (Scanner/Team Leader → View, Hub Manager and above/City Lead → Semi Admin, Regional Manager → Admin). Super Admin can override any user here.</p>
+  <div id="accessTierList">Loading…</div>
+  <div class="section-title">City ↔ Hub / DC / FC Mapping</div>
+  <div id="hubMappingPanel">Loading…</div>
+  <div class="section-title">Persona ↔ Tagging counts</div>
+  <div id="taggingGraphPanel"></div>
+  <div class="section-title">Registration Form Builder</div>
+  <p style="color:var(--muted);font-size:12px;margin-top:-4px">${isSuperAdmin ? "Add custom fields to the registration form. Removing a field only stops showing it — past answers already saved under it are kept." : "Super Admin only."}</p>
+  <div id="formBuilderPanel">${isSuperAdmin ? "Loading…" : ""}</div>`;
+  loadAdminAccounts();
+  renderHubMappingPanel();
+  renderTaggingGraphPanel();
+  if(isSuperAdmin){
+    loadRmVerifyList();
+    loadAccessTierList();
+    renderFormBuilderPanel();
+  } else {
+    document.getElementById("rmVerifyList").innerHTML = `<div class="empty">Super Admin only.</div>`;
+    document.getElementById("accessTierList").innerHTML = `<div class="empty">Super Admin only.</div>`;
+  }
+}
+async function loadRmVerifyList(){
+  const el = document.getElementById("rmVerifyList");
+  try{
+    const rows = await api("/api/admin/pending-admin-verifications");
+    el.innerHTML = rows.length===0 ? `<div class="empty">Nothing pending.</div>` :
+      rows.map(({id,data:p})=>`<div class="content-card row"><div><b>${escapeHtml(p.name)}</b> — ${escapeHtml(p.phone)} · ${escapeHtml(p.hub)}, ${escapeHtml(p.city)}</div><button class="btn btn-primary btn-sm" data-verify="${escapeAttr(id)}">✅ Verify Admin Access</button></div>`).join("");
+    el.querySelectorAll("[data-verify]").forEach(btn=>{
+      btn.onclick = async ()=>{
+        try{ await api("/api/admin/users/"+btn.dataset.verify+"/verify-admin", {method:"POST"}); showToast("Verified."); loadRmVerifyList(); }
+        catch(e){ showToast("Could not verify."); }
+      };
+    });
+  }catch(e){ el.innerHTML = `<div class="empty">Could not load.</div>`; }
+}
+async function loadAccessTierList(){
+  const el = document.getElementById("accessTierList");
+  try{
+    const rows = await api("/api/admin/users");
+    el.innerHTML = rows.map(({id,data:p})=>`<div class="content-card row">
+      <div style="flex:1;min-width:160px"><b>${escapeHtml(p.name)}</b> <span class="pill">${escapeHtml(p.primaryRole||"")}</span></div>
+      <select class="field" style="max-width:160px" data-tier="${escapeAttr(id)}">
+        ${["view","semi_admin","admin","admin_pending"].map(t=>`<option value="${t}" ${p.accessTier===t?"selected":""}>${t}</option>`).join("")}
+      </select>
+      <button class="btn btn-sm" data-savetier="${escapeAttr(id)}">Save</button>
+    </div>`).join("");
+    el.querySelectorAll("[data-savetier]").forEach(btn=>{
+      btn.onclick = async ()=>{
+        const sel = el.querySelector(`[data-tier="${btn.dataset.savetier}"]`);
+        try{ await api("/api/admin/users/"+btn.dataset.savetier+"/access-tier", {method:"POST", body: JSON.stringify({tier: sel.value})}); showToast("Updated."); }
+        catch(e){ showToast("Could not update."); }
+      };
+    });
+  }catch(e){ el.innerHTML = `<div class="empty">Could not load.</div>`; }
+}
+let taggingGraphChart = null;
+async function renderTaggingGraphPanel(){
+  const el = document.getElementById("taggingGraphPanel");
+  el.innerHTML = `<div class="content-card">
+    <label>Chart type</label>
+    <select class="field" id="tagGraphType" style="max-width:160px">
+      <option value="bar">Bar</option>
+      <option value="donut">Donut</option>
+    </select>
+    <canvas id="tagGraphCanvas" height="100"></canvas>
+  </div>`;
+  document.getElementById("tagGraphType").onchange = drawTaggingGraph;
+  drawTaggingGraph();
+}
+async function drawTaggingGraph(){
+  let data;
+  try{ data = await api("/api/admin/stats/tagging"); }catch(e){ return; }
+  const type = document.getElementById("tagGraphType").value;
+  const ctx = document.getElementById("tagGraphCanvas").getContext("2d");
+  if(taggingGraphChart) taggingGraphChart.destroy();
+  const higherPersonas = PERSONAS.filter(p=>p!=="Scanner"); // nothing is ever tagged to a Scanner
+  const subPersonas = PERSONAS.filter(p=>p!=="Regional Manager"); // RM never reports to anyone, so never appears as a subordinate
+  const colors = ["#1f8a4c","#2f6fed","#a86a00","#c0392b","#7a4fd1"];
+  if(type==="donut"){
+    const totals = subPersonas.map(sp => higherPersonas.reduce((sum,hp)=> sum + ((data[hp]||{})[sp]||0), 0));
+    taggingGraphChart = new Chart(ctx, { type:"doughnut", data:{ labels: subPersonas, datasets:[{ data: totals, backgroundColor: colors }] } });
+  } else {
+    taggingGraphChart = new Chart(ctx, {
+      type:"bar",
+      data:{ labels: higherPersonas, datasets: subPersonas.map((sp,i)=>({ label: sp, data: higherPersonas.map(hp=>(data[hp]||{})[sp]||0), backgroundColor: colors[i%colors.length] })) },
+      options:{ responsive:true, scales:{ x:{stacked:true}, y:{stacked:true} } }
+    });
+  }
+}
+async function renderFormBuilderPanel(){
+  const el = document.getElementById("formBuilderPanel");
+  let fields;
+  try{ fields = await api("/api/form-fields"); }catch(e){ el.innerHTML = `<div class="empty">Could not load.</div>`; return; }
+  el.innerHTML = `<div class="content-card">
+    <div id="formFieldsList">${fields.length===0 ? '<div class="empty">No custom fields yet.</div>' :
+      fields.map(f=>`<div class="row" style="align-items:center"><span class="pill">${escapeHtml(f.label)} (${f.type}${f.required?", required":""})</span><button class="btn btn-sm btn-danger" data-delfield="${escapeAttr(f.id)}">✕</button></div>`).join("")}
+    </div>
+    <label>New field label</label><input class="field" id="ffLabel">
+    <label>Type</label>
+    <select class="field" id="ffType">
+      <option value="text">Text</option>
+      <option value="number">Number</option>
+      <option value="dropdown">Dropdown</option>
+      <option value="date">Date</option>
+    </select>
+    <div id="ffOptionsWrap" class="hidden"><label>Options (comma-separated)</label><input class="field" id="ffOptions" placeholder="Option A, Option B"></div>
+    <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="ffRequired"> Required</label>
+    <button class="btn btn-primary btn-sm" id="ffAdd">＋ Add field</button>
+  </div>`;
+  document.getElementById("ffType").onchange = (e)=> document.getElementById("ffOptionsWrap").classList.toggle("hidden", e.target.value!=="dropdown");
+  el.querySelectorAll("[data-delfield]").forEach(btn=>{
+    btn.onclick = async ()=>{ try{ await api("/api/admin/form-fields/"+btn.dataset.delfield, {method:"DELETE"}); renderFormBuilderPanel(); }catch(e){ showToast("Delete failed."); } };
+  });
+  document.getElementById("ffAdd").onclick = async ()=>{
+    const label = document.getElementById("ffLabel").value.trim();
+    const type = document.getElementById("ffType").value;
+    const required = document.getElementById("ffRequired").checked;
+    const options = type==="dropdown" ? document.getElementById("ffOptions").value.split(",").map(s=>s.trim()).filter(Boolean) : [];
+    if(!label){ showToast("Enter a field label."); return; }
+    if(type==="dropdown" && options.length<2){ showToast("Enter at least 2 comma-separated options."); return; }
+    try{ await api("/api/admin/form-fields", {method:"POST", body: JSON.stringify({label,type,options,required})}); renderFormBuilderPanel(); }
+    catch(e){ showToast("Could not add field."); }
+  };
 }
 
 // ---------------- TAGGING ----------------
@@ -375,6 +596,9 @@ async function loadAdminAccounts(){
         rows.map(a=>`<span class="pill">${escapeHtml(a.username)}${a.id===adminSession.id?" (you)":""}</span>`).join("")
       }</div>
       <label>Add another admin</label>
+      <input class="field" id="naName" placeholder="Name">
+      <input class="field" id="naPhone" placeholder="Number">
+      <input class="field" id="naEmail" placeholder="Email ID">
       <input class="field" id="naUser" placeholder="Username">
       <input class="field" id="naPass" type="password" placeholder="Password (min 6 chars)">
       <button class="btn btn-sm" id="naSubmit">＋ Add admin</button>
@@ -382,24 +606,29 @@ async function loadAdminAccounts(){
     document.getElementById("naSubmit").onclick = async ()=>{
       const uname = document.getElementById("naUser").value.trim().toLowerCase();
       const pass = document.getElementById("naPass").value;
+      const name = document.getElementById("naName").value.trim();
+      const phone = document.getElementById("naPhone").value.trim();
+      const email = document.getElementById("naEmail").value.trim();
       if(!uname || pass.length<6){ showToast("Username required; password min 6 characters."); return; }
       try{
-        await api("/api/admin/admins", {method:"POST", body: JSON.stringify({username:uname, password:pass})});
+        await api("/api/admin/admins", {method:"POST", body: JSON.stringify({username:uname, password:pass, name, phone, email})});
         showToast("Admin added: "+uname);
         loadAdminAccounts();
       }catch(e){
         if(e.status===409) showToast("That username is already in use.");
+        else if(e.status===403) showToast("Only Super Admin can add admin accounts.");
         else showToast("Could not add admin.");
       }
     };
   }catch(e){ el.innerHTML = `<div class="empty">Could not load admin accounts.</div>`; }
 }
 
-async function loadAdminRegs(){
+async function loadAdminRegs(cityFilter){
   const el = document.getElementById("adminRegs");
   let rows;
   try{ rows = await api("/api/admin/registrations"); }
   catch(e){ el.innerHTML = `<div class="empty">Could not load registrations.</div>`; return; }
+  if(cityFilter) rows = rows.filter(({data:r})=> r.city===cityFilter);
   if(rows.length===0){ el.innerHTML = `<div class="empty">No pending registrations.</div>`; return; }
   el.innerHTML = "";
   rows.forEach(({id,data:r})=>{

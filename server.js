@@ -98,23 +98,30 @@ function allowedTagTargets(persona) {
   return PERSONAS.slice(idx + 1);
 }
 // Access tier is derived from the persona picked at registration:
-//   Scanner / Team Leader          -> view       (read-only admin views, phase 3)
-//   Hub Manager and above / City Lead -> semi_admin (manage their own tagged tree, phase 3)
-//   Regional Manager               -> admin      (Super-Admin-approved)
+//   Scanner / Team Leader          -> view          (read-only stats widget)
+//   Hub Manager and above / City Lead -> semi_admin  (manage their own directly-tagged team)
+//   Regional Manager               -> admin_pending (manages their full downstream tree once
+//                                      Super Admin separately verifies them — see /verify-admin)
 function accessTierFor(persona) {
-  if (persona === "Regional Manager") return "admin";
+  if (persona === "Regional Manager") return "admin_pending";
   if (persona === "Hub Manager and above" || persona === "City Lead") return "semi_admin";
   return "view";
 }
 
 app.post("/api/register", async (req, res) => {
   try {
-    const { uid, name, phone, email, hub, city, role, pin, taggedTo } = req.body || {};
+    const { uid, name, phone, email, hub, city, role, pin, taggedTo, customFields } = req.body || {};
     if (!uid || !name || !phone || !email || !hub || !city || !role) return res.status(400).json({ error: "missing_fields" });
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: "invalid_email" });
     if (!/^\d{7,15}$/.test(String(phone).replace(/[\s\-+]/g, ""))) return res.status(400).json({ error: "invalid_phone" });
     if (!/^\d{4}$/.test(String(pin))) return res.status(400).json({ error: "invalid_pin" });
     if (!PERSONAS.includes(role)) return res.status(400).json({ error: "invalid_role" });
+
+    const { data: fields } = await sb.from("form_fields").select("*");
+    const cf = customFields || {};
+    for (const f of (fields || [])) {
+      if (f.required && (cf[f.field_key] === undefined || cf[f.field_key] === "")) return res.status(400).json({ error: "missing_custom_field", field: f.field_key });
+    }
 
     let taggedName = null;
     if (role === "Regional Manager") {
@@ -128,7 +135,7 @@ app.post("/api/register", async (req, res) => {
       taggedName = target.name;
     }
 
-    const data = { uid, name, phone: phone.toLowerCase(), email: email.toLowerCase(), hub, city, role, pin, status: "pending", tagged_to: role === "Regional Manager" ? null : taggedTo, tagged_name: taggedName, submitted_at: Date.now() };
+    const data = { uid, name, phone: phone.toLowerCase(), email: email.toLowerCase(), hub, city, role, pin, status: "pending", tagged_to: role === "Regional Manager" ? null : taggedTo, tagged_name: taggedName, custom_fields: cf, submitted_at: Date.now() };
     const { error } = await sb.from("registrations").upsert(data);
     ok(error);
     res.json(toRegPayload(data));
@@ -358,7 +365,7 @@ app.post("/api/admin/setup", async (req, res) => {
     const passHash = await bcrypt.hash(pass, 10);
     const { data, error } = await sb.from("admins").insert({ username: uname, pass_hash: passHash, created_at: Date.now() }).select().single();
     ok(error);
-    const token = jwt.sign({ id: data.id, username: uname }, JWT_SECRET, { expiresIn: "12h" });
+    const token = jwt.sign({ id: data.id, username: uname, tier: "super_admin" }, JWT_SECRET, { expiresIn: "12h" });
     res.json({ token, username: uname });
   } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
 });
@@ -372,12 +379,16 @@ app.post("/api/admin/login", async (req, res) => {
     if (!data) return res.status(401).json({ error: "invalid_credentials" });
     const match = await bcrypt.compare(pass, data.pass_hash);
     if (!match) return res.status(401).json({ error: "invalid_credentials" });
-    const token = jwt.sign({ id: data.id, username: uname }, JWT_SECRET, { expiresIn: "12h" });
+    const token = jwt.sign({ id: data.id, username: uname, tier: data.tier || "admin" }, JWT_SECRET, { expiresIn: "12h" });
     res.json({ token, username: uname, tier: data.tier || "admin", mustChangePassword: !!data.must_change_password });
   } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
 });
 
 app.use("/api/admin", requireAdmin);
+function requireSuperAdmin(req, res, next) {
+  if (!req.admin || req.admin.tier !== "super_admin") return res.status(403).json({ error: "super_admin_only" });
+  next();
+}
 
 // Forced first-login change for the seeded Superadmin/1111 bootstrap
 // account (or any admin flagged must_change_password). Also lets them
@@ -397,20 +408,24 @@ app.post("/api/admin/change-password", async (req, res) => {
 
 app.get("/api/admin/admins", async (req, res) => {
   try {
-    const { data, error } = await sb.from("admins").select("id, username").limit(50);
+    const { data, error } = await sb.from("admins").select("id, username, display_name, phone, email, tier").limit(50);
     ok(error);
     res.json(data);
   } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
 });
-app.post("/api/admin/admins", async (req, res) => {
+// Creating an admin account is Super Admin only.
+app.post("/api/admin/admins", requireSuperAdmin, async (req, res) => {
   try {
     const uname = String(req.body.username || "").trim().toLowerCase();
     const pass = String(req.body.password || "");
+    const name = String(req.body.name || "").trim();
+    const phone = String(req.body.phone || "").trim();
+    const email = String(req.body.email || "").trim().toLowerCase();
     if (!uname || pass.length < 6) return res.status(400).json({ error: "invalid_input" });
     const { data: existing } = await sb.from("admins").select("id").eq("username", uname).maybeSingle();
     if (existing) return res.status(409).json({ error: "username_taken" });
     const passHash = await bcrypt.hash(pass, 10);
-    const { error } = await sb.from("admins").insert({ username: uname, pass_hash: passHash, created_at: Date.now() });
+    const { error } = await sb.from("admins").insert({ username: uname, pass_hash: passHash, display_name: name || null, phone: phone || null, email: email || null, tier: "admin", created_at: Date.now() });
     ok(error);
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
@@ -584,7 +599,7 @@ app.post("/api/admin/registrations/:uid/approve", async (req, res) => {
     const approvedProfile = {
       id: uid, name: r.name, phone: r.phone, email: r.email, hub: r.hub, city: r.city, pin: r.pin || "",
       roles, primary_role: primaryRole, tagged_to: r.tagged_to || null, access_tier: accessTierFor(primaryRole),
-      status: "approved", approved_at: Date.now()
+      custom_fields: r.custom_fields || {}, status: "approved", approved_at: Date.now()
     };
     const { error: e2 } = await sb.from("profiles").upsert(approvedProfile);
     ok(e2);
@@ -637,6 +652,261 @@ app.delete("/api/admin/users/:id", async (req, res) => {
     res.json({ ok: true, name: snap && snap.name });
   } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
 });
+
+// Super Admin can grant/change any user's or admin's access tier at any
+// time — this overrides whatever accessTierFor() auto-assigned on
+// approval. tier: 'view' | 'semi_admin' | 'admin' | 'admin_pending'.
+app.post("/api/admin/users/:id/access-tier", requireSuperAdmin, async (req, res) => {
+  try {
+    const tier = String(req.body.tier || "");
+    if (!["view", "semi_admin", "admin", "admin_pending"].includes(tier)) return res.status(400).json({ error: "invalid_tier" });
+    const { error } = await sb.from("profiles").update({ access_tier: tier, updated_at: Date.now() }).eq("id", req.params.id);
+    ok(error);
+    res.json({ ok: true });
+  } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
+});
+// The one-time Super-Admin verification step a Regional Manager needs
+// before their admin_pending access becomes full admin access.
+app.post("/api/admin/users/:id/verify-admin", requireSuperAdmin, async (req, res) => {
+  try {
+    const { error } = await sb.from("profiles").update({ access_tier: "admin", updated_at: Date.now() }).eq("id", req.params.id);
+    ok(error);
+    res.json({ ok: true });
+  } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
+});
+app.get("/api/admin/pending-admin-verifications", requireSuperAdmin, async (req, res) => {
+  try {
+    const { data, error } = await sb.from("profiles").select("*").eq("access_tier", "admin_pending");
+    ok(error);
+    res.json(data.map(p => ({ id: p.id, data: toProfilePayload(p, true) })));
+  } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
+});
+
+// =========================================================
+// MY TEAM — the tagging-tree view for Semi Admin (Hub Manager and above /
+// City Lead: their directly-tagged reports only) and Admin (Regional
+// Manager, once verified: the full recursive downstream tree through
+// their Hub Managers/City Leads). Same device/PIN trust model the rest
+// of the staff-facing API already uses — no separate staff auth layer.
+// =========================================================
+app.get("/api/my-team", async (req, res) => {
+  try {
+    const uid = String(req.query.uid || "");
+    const { data: me } = await sb.from("profiles").select("*").eq("id", uid).eq("status", "approved").maybeSingle();
+    if (!me || me.access_tier === "view") return res.status(403).json({ error: "not_authorized" });
+    if (me.access_tier === "admin_pending") return res.json({ tier: me.access_tier, team: [], note: "awaiting_super_admin_verification" });
+
+    const { data: allProfiles } = await sb.from("profiles").select("*").eq("status", "approved");
+    let team;
+    if (me.access_tier === "admin") {
+      // Recursive downstream: everyone reachable by following tagged_to
+      // chains back up to me, however many levels deep.
+      const byTag = {};
+      (allProfiles || []).forEach(p => { if (p.tagged_to) (byTag[p.tagged_to] ||= []).push(p); });
+      const result = [];
+      const queue = [uid];
+      const seen = new Set();
+      while (queue.length) {
+        const cur = queue.shift();
+        const kids = byTag[cur] || [];
+        kids.forEach(k => { if (!seen.has(k.id)) { seen.add(k.id); result.push(k); queue.push(k.id); } });
+      }
+      team = result;
+    } else {
+      // semi_admin: direct reports only.
+      team = (allProfiles || []).filter(p => p.tagged_to === uid);
+    }
+    res.json({ tier: me.access_tier, team: team.map(p => ({ id: p.id, data: toProfilePayload(p, true) })) });
+  } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
+});
+// Edit/remove a team member — restricted server-side to people actually
+// inside the caller's own tree (same reachability check as /api/my-team).
+app.post("/api/my-team/:targetId/revoke", async (req, res) => {
+  try {
+    const uid = String(req.body.uid || "");
+    const targetId = req.params.targetId;
+    const { data: me } = await sb.from("profiles").select("*").eq("id", uid).eq("status", "approved").maybeSingle();
+    if (!me || (me.access_tier !== "semi_admin" && me.access_tier !== "admin")) return res.status(403).json({ error: "not_authorized" });
+    const inTree = await isInDownstreamTree(uid, targetId, me.access_tier === "admin");
+    if (!inTree) return res.status(403).json({ error: "not_in_your_team" });
+    const { data: snap } = await sb.from("profiles").select("name").eq("id", targetId).maybeSingle();
+    const { error } = await sb.from("profiles").delete().eq("id", targetId);
+    ok(error);
+    res.json({ ok: true, name: snap && snap.name });
+  } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
+});
+async function isInDownstreamTree(rootUid, targetId, recursive) {
+  const { data: target } = await sb.from("profiles").select("id,tagged_to").eq("id", targetId).maybeSingle();
+  if (!target) return false;
+  if (target.tagged_to === rootUid) return true;
+  if (!recursive) return false;
+  const { data: allProfiles } = await sb.from("profiles").select("id,tagged_to").eq("status", "approved");
+  const byId = {}; (allProfiles || []).forEach(p => byId[p.id] = p);
+  let cur = target;
+  const seen = new Set();
+  while (cur && cur.tagged_to && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    if (cur.tagged_to === rootUid) return true;
+    cur = byId[cur.tagged_to];
+  }
+  return false;
+}
+
+// =========================================================
+// TAGGED-PERSON CSV APPROVAL — the person a registrant tagged (their
+// "Reporting To") downloads their own pending list, edits Status to
+// Approved, re-uploads. Regional Manager registrations have no tagged
+// person (see /api/admin/registrations for Super Admin's own version of
+// this same flow).
+// =========================================================
+app.get("/api/my-pending-approvals", async (req, res) => {
+  try {
+    const uid = String(req.query.uid || "");
+    const { data: me } = await sb.from("profiles").select("access_tier").eq("id", uid).eq("status", "approved").maybeSingle();
+    if (!me || me.access_tier === "view") return res.status(403).json({ error: "not_authorized" });
+    const { data, error } = await sb.from("registrations").select("*").eq("tagged_to", uid).eq("status", "pending");
+    ok(error);
+    res.json((data || []).map(toRegPayload));
+  } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
+});
+app.post("/api/my-pending-approvals/upload", upload.single("file"), async (req, res) => {
+  try {
+    const uid = String(req.body.uid || "");
+    const { data: me } = await sb.from("profiles").select("access_tier").eq("id", uid).eq("status", "approved").maybeSingle();
+    if (!me || me.access_tier === "view") return res.status(403).json({ error: "not_authorized" });
+    if (!req.file) return res.status(400).json({ error: "no_file" });
+    const results = await approveFromCsv(req.file.buffer, uid);
+    res.json({ results });
+  } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
+});
+// Super Admin's own version — same sheet format, but not restricted to
+// one tagged person's rows (any pending registration is fair game),
+// which is also how Regional Manager registrations (no tagged person)
+// get approved.
+app.get("/api/admin/registrations/export-csv", async (req, res) => {
+  try {
+    const { data, error } = await sb.from("registrations").select("*").eq("status", "pending");
+    ok(error);
+    const rows = (data || []).map(r => [r.name, r.phone, r.hub, r.city, r.role, r.tagged_name || "", "Pending"]);
+    const csv = toCsv(["Name","Phone","Hub","City","Role","Tagged To","Status"], rows);
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", 'attachment; filename="pending-registrations.csv"');
+    res.send(csv);
+  } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
+});
+app.post("/api/admin/registrations/upload-csv", upload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "no_file" });
+    const results = await approveFromCsv(req.file.buffer, null); // null = no tagged_to restriction (admin can approve anyone)
+    res.json({ results });
+  } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
+});
+// Shared by both CSV-approval endpoints above. restrictToTaggedUid: when
+// set, only rows whose registration.tagged_to matches are ever touched —
+// this is what stops a tagged person approving someone else's team.
+async function approveFromCsv(buffer, restrictToTaggedUid) {
+  const wb = XLSX.read(buffer, { type: "buffer", cellDates: true });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+  const results = [];
+  for (const row of rows) {
+    const get = (...keys) => {
+      for (const k of keys) {
+        const found = Object.keys(row).find(rk => rk.trim().toLowerCase() === k);
+        if (found && String(row[found]).trim() !== "") return row[found];
+      }
+      return "";
+    };
+    const status = String(get("status") || "").trim().toLowerCase();
+    if (status !== "approved") { results.push({ phone: get("phone"), status: "skipped", reason: "status_not_approved" }); continue; }
+    const phone = normPhone(String(get("phone") || ""));
+    try {
+      const { data: r } = await sb.from("registrations").select("*").eq("phone", phone).eq("status", "pending").maybeSingle();
+      if (!r) { results.push({ phone, status: "error", reason: "not_found_or_already_processed" }); continue; }
+      if (restrictToTaggedUid && r.tagged_to !== restrictToTaggedUid) { results.push({ phone, status: "error", reason: "not_your_approval_to_make" }); continue; }
+      const primaryRole = r.role;
+      const approvedProfile = {
+        id: r.uid, name: r.name, phone: r.phone, email: r.email, hub: r.hub, city: r.city, pin: r.pin || "",
+        roles: [primaryRole], primary_role: primaryRole, tagged_to: r.tagged_to || null, access_tier: accessTierFor(primaryRole),
+        custom_fields: r.custom_fields || {}, status: "approved", approved_at: Date.now()
+      };
+      const { error: e1 } = await sb.from("profiles").upsert(approvedProfile);
+      ok(e1);
+      const { error: e2 } = await sb.from("registrations").update({ status: "approved" }).eq("uid", r.uid);
+      ok(e2);
+      results.push({ phone, status: "approved", name: r.name });
+    } catch (rowErr) {
+      results.push({ phone, status: "error", reason: "server_error" });
+    }
+  }
+  return results;
+}
+function toCsv(header, rows) {
+  const esc = v => { const s = String(v == null ? "" : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  return [header, ...rows].map(r => r.map(esc).join(",")).join("\r\n");
+}
+
+// =========================================================
+// TAGGING GRAPH — counts of each higher persona's directly-tagged
+// subordinates, broken down by the subordinate's persona. e.g. Team
+// Leader -> {Scanner: 12}; Hub Manager and above -> {Scanner: 5, "Team
+// Leader": 3}; Regional Manager -> one bucket per persona below it.
+// =========================================================
+app.get("/api/admin/stats/tagging", async (req, res) => {
+  try {
+    const { data: profiles, error } = await sb.from("profiles").select("id,primary_role,tagged_to").eq("status", "approved");
+    ok(error);
+    const byId = {}; (profiles || []).forEach(p => byId[p.id] = p);
+    const result = {};
+    PERSONAS.forEach(p => { result[p] = {}; });
+    (profiles || []).forEach(p => {
+      if (!p.tagged_to) return;
+      const target = byId[p.tagged_to];
+      if (!target) return;
+      result[target.primary_role] ||= {};
+      result[target.primary_role][p.primary_role] = (result[target.primary_role][p.primary_role] || 0) + 1;
+    });
+    res.json(result);
+  } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
+});
+
+// =========================================================
+// DYNAMIC REGISTRATION FORM FIELDS (Super Admin only to manage; public
+// read so the registration form can render them).
+// =========================================================
+app.get("/api/form-fields", async (req, res) => {
+  try {
+    const { data, error } = await sb.from("form_fields").select("*").order("sort_order", { ascending: true });
+    ok(error);
+    res.json((data || []).map(f => ({ id: f.id, fieldKey: f.field_key, label: f.label, type: f.type, options: f.options || [], required: f.required, sortOrder: f.sort_order })));
+  } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
+});
+app.post("/api/admin/form-fields", requireSuperAdmin, async (req, res) => {
+  try {
+    const { label, type, options, required } = req.body || {};
+    if (!label) return res.status(400).json({ error: "missing_label" });
+    const fieldKey = String(label).trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+    if (!fieldKey) return res.status(400).json({ error: "invalid_label" });
+    const { data: maxRow } = await sb.from("form_fields").select("sort_order").order("sort_order", { ascending: false }).limit(1).maybeSingle();
+    const sortOrder = maxRow ? maxRow.sort_order + 1 : 0;
+    const { error } = await sb.from("form_fields").insert({
+      field_key: fieldKey, label: String(label).trim(), type: ["text","number","dropdown","date"].includes(type) ? type : "text",
+      options: type === "dropdown" ? (Array.isArray(options) ? options : []) : [], required: !!required, sort_order: sortOrder, created_at: Date.now()
+    });
+    ok(error);
+    res.json({ ok: true });
+  } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
+});
+app.delete("/api/admin/form-fields/:id", requireSuperAdmin, async (req, res) => {
+  try {
+    // Only removes the field definition — existing registrations/profiles
+    // keep whatever value they already stored under that field_key.
+    const { error } = await sb.from("form_fields").delete().eq("id", req.params.id);
+    ok(error);
+    res.json({ ok: true });
+  } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
+});
+
 
 app.get("/api/admin/content", async (req, res) => {
   try {
@@ -946,10 +1216,10 @@ function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
 // matching exactly what the frontend already expects)
 // =========================================================
 function toRegPayload(r) {
-  return { uid: r.uid, name: r.name, phone: r.phone, email: r.email, hub: r.hub, city: r.city, role: r.role, pin: r.pin, status: r.status, note: r.note, taggedTo: r.tagged_to, taggedName: r.tagged_name, submittedAt: r.submitted_at };
+  return { uid: r.uid, name: r.name, phone: r.phone, email: r.email, hub: r.hub, city: r.city, role: r.role, pin: r.pin, status: r.status, note: r.note, taggedTo: r.tagged_to, taggedName: r.tagged_name, customFields: r.custom_fields || {}, submittedAt: r.submitted_at };
 }
 function toProfilePayload(p, dropPin) {
-  const out = { name: p.name, phone: p.phone, email: p.email, hub: p.hub, city: p.city, roles: p.roles || [], primaryRole: p.primary_role, taggedTo: p.tagged_to, accessTier: p.access_tier || "view", status: p.status, lastLogin: p.last_login, pin: p.pin };
+  const out = { name: p.name, phone: p.phone, email: p.email, hub: p.hub, city: p.city, roles: p.roles || [], primaryRole: p.primary_role, taggedTo: p.tagged_to, accessTier: p.access_tier || "view", customFields: p.custom_fields || {}, status: p.status, lastLogin: p.last_login, pin: p.pin };
   if (dropPin) delete out.pin;
   return out;
 }
