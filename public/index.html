@@ -296,18 +296,25 @@ function wireUserTypeahead({inputEl, hiddenIdEl, listEl, fetchCandidates}){
       if(q.length<1){ listEl.innerHTML=""; listEl.classList.add("hidden"); return; }
       const candidates = await fetchCandidates(q);
       if(candidates.length===0){ listEl.innerHTML = `<div style="padding:6px;color:var(--muted);font-size:12px">No matching names.</div>`; listEl.classList.remove("hidden"); return; }
-      listEl.innerHTML = candidates.map(c=>`<div class="typeahead-row" data-id="${escapeAttr(c.id)}" style="padding:6px;cursor:pointer;border-bottom:1px solid var(--border)"><b>${escapeHtml(c.name)}</b> <span style="color:var(--muted);font-size:12px">${escapeHtml(c.primaryRole||c.primary_role||"")} · ${escapeHtml(c.hub||"")}</span></div>`).join("");
+      listEl.innerHTML = candidates.map(c=>`<div class="typeahead-row" data-id="${escapeAttr(c.id)}" data-name="${escapeAttr(c.name)}" style="padding:6px;cursor:pointer;border-bottom:1px solid var(--border)"><b>${escapeHtml(c.name)}</b> <span style="color:var(--muted);font-size:12px">${escapeHtml(c.primaryRole||c.primary_role||"")} · ${escapeHtml(c.hub||"")}</span></div>`).join("");
       listEl.classList.remove("hidden");
       listEl.querySelectorAll("[data-id]").forEach(row=>{
-        row.onclick = ()=>{
+        // mousedown, not click: it fires BEFORE the input's blur event, so
+        // the selection registers even though clicking the row moves focus
+        // away from the input. (click+blur here was a race — blur could
+        // hide the list before the row's click ever landed.)
+        row.addEventListener("mousedown", (e)=>{
+          e.preventDefault();
           hiddenIdEl.value = row.dataset.id;
-          inputEl.value = row.querySelector("b").textContent;
+          inputEl.value = row.dataset.name;
           listEl.innerHTML=""; listEl.classList.add("hidden");
-        };
+        });
       });
     }, 200);
   });
-  inputEl.addEventListener("blur", ()=> setTimeout(()=>listEl.classList.add("hidden"), 150));
+  document.addEventListener("click", (e)=>{
+    if(e.target!==inputEl && !listEl.contains(e.target)) listEl.classList.add("hidden");
+  });
 }
 function renderRegister(prefill){
   crumbSub.textContent = "New user registration";
@@ -679,15 +686,18 @@ function renderTopicGroups(p){
 let multiGroups = []; // [{persona, topic, items:[{id,data,done}], allDone}]
 
 async function renderMultiPersona(roles){
-  crumbSub.textContent = `Signed in as ${state.profile?.name||""} · Roles: ${roles.join(", ")}${state.kiosk?" · 🔑 kiosk login":""}`;
-  app.innerHTML = `<div class="row"><div class="section-title" style="margin:0">🎓 Training Content</div>
+  const displayRole = state.profile?.primaryRole || roles[0];
+  crumbSub.textContent = `Signed in as ${state.profile?.name||""} · Role: ${displayRole}${state.kiosk?" · 🔑 kiosk login":""}`;
+  app.innerHTML = `<div class="row"><div class="section-title" style="margin:0">${ICONS[displayRole]||"🎓"} ${displayRole} — Training Content</div>
   <div class="top-actions">
     <button class="btn btn-sm" id="wrongRole">${state.kiosk?"Not you? Logout":"Wrong role? Request change"}</button>
   </div></div>
-  <p style="color:var(--muted);font-size:12px;margin-top:-4px">You're assigned multiple roles (${roles.map(r=>escapeHtml(r)).join(", ")}) — everything is shown below, split into Pending and Completed.</p>
+  <p style="color:var(--muted);font-size:12px;margin-top:-4px">Your training content also includes what's assigned to ${roles.filter(r=>r!==displayRole).map(r=>escapeHtml(r)).join(", ")} — everything is shown below, split into Pending and Completed.</p>
+  <div id="myTeamSection"></div>
   <div id="assignedSection"></div>
   <div id="multiGroups">Loading…</div>`;
   document.getElementById("wrongRole").onclick = ()=> state.kiosk ? logout() : renderRegister(state.profile);
+  renderMyTeamSection();
   await loadMultiPersonaContent(roles);
   loadAndRenderAssigned();
 }
