@@ -129,6 +129,7 @@ app.post("/api/register", async (req, res) => {
       // Their registration is approved directly by Super Admin instead.
     } else {
       if (!taggedTo) return res.status(400).json({ error: "tagging_required" });
+      if (taggedTo === uid) return res.status(400).json({ error: "cannot_tag_self" });
       const { data: target } = await sb.from("profiles").select("id,name,primary_role,status").eq("id", taggedTo).maybeSingle();
       if (!target || target.status !== "approved") return res.status(400).json({ error: "invalid_tagged_to" });
       if (!allowedTagTargets(role).includes(target.primary_role)) return res.status(400).json({ error: "tagging_hierarchy_violation" });
@@ -462,6 +463,27 @@ app.delete("/api/admin/hub-mapping/:id", async (req, res) => {
 // if that person's persona isn't actually above the subject's in the
 // hierarchy (same rule as the registration-form tagging picker).
 // =========================================================
+// =========================================================
+// Export current tagging for every approved user as CSV: Name, Phone,
+// Email, City, Hub, Reporting To, Designation, Number — the last three
+// describe the TAGGED-TO person (name, their persona, their phone).
+// =========================================================
+app.get("/api/admin/tagging/export-csv", async (req, res) => {
+  try {
+    const { data: profiles, error } = await sb.from("profiles").select("*").eq("status", "approved");
+    ok(error);
+    const byId = {}; (profiles || []).forEach(p => byId[p.id] = p);
+    const rows = (profiles || []).map(p => {
+      const target = p.tagged_to ? byId[p.tagged_to] : null;
+      return [p.name, p.phone, p.email, p.city, p.hub, target ? target.name : "", target ? target.primary_role : "", target ? target.phone : ""];
+    });
+    const csv = toCsv(["Name","Phone","Email","City","Hub","Reporting To","Designation","Number"], rows);
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", 'attachment; filename="tagging-export.csv"');
+    res.send(csv);
+  } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
+});
+
 app.post("/api/admin/bulk-tagging", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "no_file" });
@@ -489,6 +511,7 @@ app.post("/api/admin/bulk-tagging", upload.single("file"), async (req, res) => {
         if (!subject || subject.status !== "approved") { results.push({ phone: cleanPhone, status: "error", reason: "user_not_found" }); continue; }
         const { data: target } = await sb.from("profiles").select("id,name,primary_role,status").eq("phone", taggedNumber).maybeSingle();
         if (!target || target.status !== "approved") { results.push({ phone: cleanPhone, status: "error", reason: "tagged_person_not_found" }); continue; }
+        if (subject.id === target.id) { results.push({ phone: cleanPhone, status: "error", reason: "cannot_tag_self" }); continue; }
         if (!allowedTagTargets(subject.primary_role).includes(target.primary_role)) {
           results.push({ phone: cleanPhone, status: "error", reason: "tagging_hierarchy_violation" });
           continue;
@@ -716,6 +739,9 @@ app.get("/api/my-team", async (req, res) => {
       // semi_admin: direct reports only.
       team = (allProfiles || []).filter(p => p.tagged_to === uid);
     }
+    // Safety net: a user should never appear inside their own team list
+    // (and never get a self-revoke option), however the data got there.
+    team = team.filter(p => p.id !== uid);
     res.json({ tier: me.access_tier, team: team.map(p => ({ id: p.id, data: toProfilePayload(p, true) })) });
   } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
 });

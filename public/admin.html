@@ -535,11 +535,20 @@ async function renderFormBuilderPanel(){
 function renderTaggingPanel(){
   const el = document.getElementById("taggingPanel");
   el.innerHTML = `<div class="content-card">
-    <p style="font-size:12px;color:var(--muted);margin-top:0">Bulk-set tagging for existing users via spreadsheet. Columns: <b>Name, Phone, Email, Tagged Name, Tagged Designation, Tagged Number</b> — matched by Phone (subject) and Tagged Number (the person they report to); a row is rejected if the tagged person isn't actually above the subject in the hierarchy.</p>
+    <div class="top-actions">
+      <button class="btn btn-sm" id="dlTaggingCsvBtn">⬇ Download all current tagging (CSV)</button>
+    </div>
+    <p style="font-size:12px;color:var(--muted);margin-top:10px">Bulk-set tagging for existing users via spreadsheet. Columns: <b>Name, Phone, Email, Tagged Name, Tagged Designation, Tagged Number</b> — matched by Phone (subject) and Tagged Number (the person they report to); a row is rejected if the tagged person isn't actually above the subject in the hierarchy.</p>
     <input class="field" type="file" id="tagBulkFile" accept=".xlsx,.xls,.csv">
     <button class="btn btn-primary btn-sm" id="tagBulkSubmit">⬆ Upload Tagging</button>
     <div id="tagBulkResult"></div>
   </div>`;
+  document.getElementById("dlTaggingCsvBtn").onclick = ()=>{
+    fetch(API+"/api/admin/tagging/export-csv", {headers:{Authorization:"Bearer "+adminSession.token}})
+      .then(r=>r.blob()).then(blob=>{
+        const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="tagging-export.csv"; a.click();
+      }).catch(()=>showToast("Download failed."));
+  };
   document.getElementById("tagBulkSubmit").onclick = async ()=>{
     const fileInput = document.getElementById("tagBulkFile");
     const resEl = document.getElementById("tagBulkResult");

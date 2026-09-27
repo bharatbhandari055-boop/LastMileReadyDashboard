@@ -517,7 +517,7 @@ async function renderPersona(){
   state.multi = false;
   const p = state.persona;
   crumbSub.textContent = `Signed in as ${state.profile?.name||""} · Role: ${p}${state.kiosk?" · 🔑 kiosk login":""}`;
-  app.innerHTML = `<div class="row"><div class="section-title" style="margin:0">${ICONS[p]||"🎓"} ${p} — Training Content</div>
+  app.innerHTML = `<div class="row"><div class="section-title" style="margin:0">🎓 Training Content</div>
   <div class="top-actions">
     <button class="btn btn-sm" id="wrongRole">${state.kiosk?"Not you? Logout":"Wrong role? Request change"}</button>
   </div></div>
@@ -688,7 +688,7 @@ let multiGroups = []; // [{persona, topic, items:[{id,data,done}], allDone}]
 async function renderMultiPersona(roles){
   const displayRole = state.profile?.primaryRole || roles[0];
   crumbSub.textContent = `Signed in as ${state.profile?.name||""} · Role: ${displayRole}${state.kiosk?" · 🔑 kiosk login":""}`;
-  app.innerHTML = `<div class="row"><div class="section-title" style="margin:0">${ICONS[displayRole]||"🎓"} ${displayRole} — Training Content</div>
+  app.innerHTML = `<div class="row"><div class="section-title" style="margin:0">🎓 Training Content</div>
   <div class="top-actions">
     <button class="btn btn-sm" id="wrongRole">${state.kiosk?"Not you? Logout":"Wrong role? Request change"}</button>
   </div></div>
