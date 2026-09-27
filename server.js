@@ -505,6 +505,29 @@ app.post("/api/admin/bulk-tagging", upload.single("file"), async (req, res) => {
 });
 
 // =========================================================
+// ADMIN: Download all current tagging as a CSV — the read side of the
+// upload above. Same six columns, in the same order, so a downloaded
+// file can be edited and re-uploaded through /api/admin/bulk-tagging
+// without reshaping it.
+// =========================================================
+app.get("/api/admin/tagging/export-csv", async (req, res) => {
+  try {
+    const { data: profiles, error } = await sb.from("profiles").select("id,name,phone,email,primary_role,tagged_to,status").eq("status", "approved").limit(5000);
+    ok(error);
+    const byId = {}; (profiles || []).forEach(p => { byId[p.id] = p; });
+    const header = ["Name", "Phone", "Email", "Tagged Name", "Tagged Designation", "Tagged Number"];
+    const rows = (profiles || []).map(p => {
+      const target = p.tagged_to ? byId[p.tagged_to] : null;
+      return [p.name, p.phone, p.email, target ? target.name : "", target ? target.primary_role : "", target ? target.phone : ""];
+    });
+    const csv = [header, ...rows].map(r => r.map(csvEscape).join(",")).join("\r\n");
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", `attachment; filename="tagging-export.csv"`);
+    res.send(csv);
+  } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
+});
+
+// =========================================================
 // ADMIN: Completion + active/inactive stats — powers the graphs at the
 // top of the User dashboard (bar/stacked-bar/donut toggle is a frontend
 // concern; this just returns the numbers).
