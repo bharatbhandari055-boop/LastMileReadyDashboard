@@ -929,7 +929,7 @@ function openContentViewer(persona, contentId, c){
   overlay.className = "viewer-overlay";
   let mediaHtml;
   if(isVideo){
-    mediaHtml = `<video id="viewerVideo" controls autoplay playsinline style="width:100%;height:100%;object-fit:contain;background:#000" src="${escapeAttr(c.url||"")}"></video>`;
+    mediaHtml = `<video id="viewerVideo" controls controlsList="nodownload noplaybackrate" disablePictureInPicture autoplay playsinline style="width:100%;height:100%;object-fit:contain;background:#000" src="${escapeAttr(c.url||"")}"></video>`;
   } else if(c.type==="ppt" || c.type==="doc"){
     const embedUrl = "https://view.officeapps.live.com/op/embed.aspx?src=" + encodeURIComponent(c.url||"");
     mediaHtml = `<iframe src="${escapeAttr(embedUrl)}" style="width:100%;height:100%;border:none;background:#fff" allowfullscreen></iframe>`;
@@ -991,8 +991,11 @@ function fmtTime(s){
 
 function setupVideoGate(overlay, persona, contentId, c, btn){
   const video = document.getElementById("viewerVideo");
-  const requiredSeconds = c.requiredMinutes ? Math.round(c.requiredMinutes*60) : null;
+  const requiredSecondsRaw = c.requiredMinutes ? Math.round(c.requiredMinutes*60) : null;
+  let unlocked = false;
   const unlock = ()=>{
+    if(unlocked) return;
+    unlocked = true;
     btn.disabled = false;
     btn.textContent = "✅ Mark as completed";
     btn.onclick = ()=>{ markContentComplete(persona, contentId); overlay._doClose(); };
@@ -1000,34 +1003,73 @@ function setupVideoGate(overlay, persona, contentId, c, btn){
     if(closeBtn) closeBtn.style.display = "none"; // once Mark Complete is active, closing only happens via that button
   };
 
-  if(!requiredSeconds){
-    // Legacy content saved before a required watch-time existed — fall
-    // back to "must play through to the end".
+  // ---- No skipping ahead (applies to every video, legacy or timed) ----
+  // maxReached = furthest point genuinely PLAYED to. Any seek (progress bar,
+  // skip buttons, arrow keys, media keys) past it is snapped back. Going
+  // backwards is allowed. Because of this, "ended" can only fire after real
+  // playback, never from dragging/skipping to the end.
+  const SEEK_TOLERANCE = 1;
+  let maxReached = 0, playedSeconds = 0, lastTime = 0;
+  video.addEventListener("seeking", ()=>{
+    if(!unlocked && video.currentTime > maxReached + SEEK_TOLERANCE){
+      video.currentTime = maxReached;
+      showToast("Skipping ahead isn't allowed — please watch the video.");
+    }
+    lastTime = video.currentTime;
+  });
+  // Playback speed is locked to 1x so it can't be used to shorten the watch.
+  video.addEventListener("ratechange", ()=>{ if(video.playbackRate !== 1) video.playbackRate = 1; });
+
+  if(!requiredSecondsRaw){
+    // Legacy content saved before a required watch-time existed — must play
+    // through to the end (skipping is blocked above, so "ended" is genuine).
     btn.textContent = "⏳ Watch to the end…";
+    video.addEventListener("timeupdate", ()=>{
+      if(!video.seeking && !video.paused && video.currentTime > maxReached) maxReached = video.currentTime;
+    });
     video.addEventListener("ended", unlock);
     return;
   }
 
-  let playedSeconds = 0, lastTime = 0, unlocked = false;
+  // The requirement can't exceed the video's own length (otherwise it could
+  // never be met) — cap it once the duration is known.
+  let requiredSeconds = requiredSecondsRaw;
+  const applyDurationCap = ()=>{
+    if(isFinite(video.duration) && video.duration > 0){
+      requiredSeconds = Math.min(requiredSecondsRaw, Math.max(1, video.duration - 2));
+      updateLabel();
+    }
+  };
   const updateLabel = ()=>{ if(!unlocked) btn.textContent = `⏳ Watched ${fmtTime(playedSeconds)} / ${fmtTime(requiredSeconds)}`; };
   updateLabel();
+  video.addEventListener("loadedmetadata", applyDurationCap);
+  if(video.readyState >= 1) applyDurationCap();
 
   video.addEventListener("play", ()=>{ lastTime = video.currentTime; });
-  video.addEventListener("seeking", ()=>{ lastTime = video.currentTime; });
   video.addEventListener("timeupdate", ()=>{
     const cur = video.currentTime;
-    // timeupdate only fires during playback, so pausing naturally stops
-    // accumulation; the small delta cap stops a seek-ahead jump from
-    // being counted as watched time.
+    // timeupdate only fires during real playback, so pausing naturally stops
+    // the count; the delta cap keeps any jump from being counted as watched.
     if(!video.paused && !video.seeking){
       const delta = cur - lastTime;
       if(delta > 0 && delta < 1.5) playedSeconds += delta;
+      if(cur > maxReached) maxReached = cur;
     }
     lastTime = cur;
-    if(!unlocked && playedSeconds >= requiredSeconds){ unlocked = true; unlock(); }
+    if(!unlocked && playedSeconds >= requiredSeconds) unlock();
     else updateLabel();
   });
-  video.addEventListener("ended", ()=>{ if(!unlocked){ unlocked = true; unlock(); } });
+  // "ended" no longer unlocks by itself — it only counts if enough time was
+  // genuinely watched (small tolerance for timeupdate granularity).
+  video.addEventListener("ended", ()=>{
+    if(unlocked) return;
+    if(playedSeconds >= requiredSeconds - 2){ unlock(); }
+    else {
+      showToast(`Keep watching — ${fmtTime(requiredSeconds - playedSeconds)} more to go. Restarting the video.`);
+      video.currentTime = 0;
+      video.play().catch(()=>{});
+    }
+  });
 }
 
 async function markContentComplete(persona, contentId){
