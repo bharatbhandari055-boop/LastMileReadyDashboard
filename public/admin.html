@@ -125,80 +125,6 @@ async function apiUpload(path, formData){
   return data;
 }
 
-// ---------------- Reusable: registration-style helpers, ported from
-// index.html for the Add User panel (Access tab, Super Admin only) so it
-// behaves identically to the public registration form. ----------------
-let formFieldsCache = null;
-async function loadFormFields(){
-  if(!formFieldsCache){ try{ formFieldsCache = await api("/api/form-fields"); }catch(e){ formFieldsCache = []; } }
-  return formFieldsCache;
-}
-async function renderCustomFieldsInto(containerId, existingValues){
-  const container = document.getElementById(containerId);
-  if(!container) return;
-  const fields = await loadFormFields();
-  const vals = existingValues || {};
-  container.innerHTML = fields.map(f=>{
-    const val = vals[f.fieldKey] || "";
-    const reqStar = f.required ? " *" : "";
-    if(f.type==="dropdown"){
-      return `<label>${escapeHtml(f.label)}${reqStar}</label><select class="field" data-custom-field="${escapeAttr(f.fieldKey)}">
-        <option value=""></option>
-        ${f.options.map(o=>`<option value="${escapeAttr(o)}" ${o===val?"selected":""}>${escapeHtml(o)}</option>`).join("")}
-      </select>`;
-    }
-    const inputType = f.type==="number" ? "number" : f.type==="date" ? "date" : "text";
-    return `<label>${escapeHtml(f.label)}${reqStar}</label><input class="field" type="${inputType}" data-custom-field="${escapeAttr(f.fieldKey)}" value="${escapeAttr(val)}">`;
-  }).join("");
-}
-function collectCustomFieldValues(containerId){
-  const container = document.getElementById(containerId);
-  if(!container) return {};
-  const out = {};
-  container.querySelectorAll("[data-custom-field]").forEach(el=>{ out[el.dataset.customField] = el.value.trim(); });
-  return out;
-}
-function validateRequiredCustomFields(containerId, msgEl){
-  const container = document.getElementById(containerId);
-  if(!container) return true;
-  let ok = true;
-  container.querySelectorAll("[data-custom-field]").forEach(el=>{
-    const label = el.previousElementSibling ? el.previousElementSibling.textContent : el.dataset.customField;
-    if(label.trim().endsWith("*") && !el.value.trim()) ok = false;
-  });
-  if(!ok) msgEl.innerHTML = `<div class="msg msg-danger">Please fill in all required fields.</div>`;
-  return ok;
-}
-// Same typeahead pattern as the public registration form's "Reporting To"
-// picker — only matching names shown as you type, selection via
-// mousedown (fires before blur, so a click on a row always registers).
-function wireUserTypeahead({inputEl, hiddenIdEl, listEl, fetchCandidates}){
-  let debounceTimer;
-  inputEl.addEventListener("input", ()=>{
-    hiddenIdEl.value = "";
-    clearTimeout(debounceTimer);
-    const q = inputEl.value.trim();
-    debounceTimer = setTimeout(async ()=>{
-      if(q.length<1){ listEl.innerHTML=""; listEl.classList.add("hidden"); return; }
-      const candidates = await fetchCandidates(q);
-      if(candidates.length===0){ listEl.innerHTML = `<div style="padding:6px;color:var(--muted);font-size:12px">No matching names.</div>`; listEl.classList.remove("hidden"); return; }
-      listEl.innerHTML = candidates.map(c=>`<div class="typeahead-row" data-id="${escapeAttr(c.id)}" data-name="${escapeAttr(c.name)}" style="padding:6px;cursor:pointer;border-bottom:1px solid var(--border)"><b>${escapeHtml(c.name)}</b> <span style="color:var(--muted);font-size:12px">${escapeHtml(c.primaryRole||c.primary_role||"")} · ${escapeHtml(c.hub||"")}</span></div>`).join("");
-      listEl.classList.remove("hidden");
-      listEl.querySelectorAll("[data-id]").forEach(row=>{
-        row.addEventListener("mousedown", (e)=>{
-          e.preventDefault();
-          hiddenIdEl.value = row.dataset.id;
-          inputEl.value = row.dataset.name;
-          listEl.innerHTML=""; listEl.classList.add("hidden");
-        });
-      });
-    }, 200);
-  });
-  document.addEventListener("click", (e)=>{
-    if(e.target!==inputEl && !listEl.contains(e.target)) listEl.classList.add("hidden");
-  });
-}
-
 async function init(){
   logoutBtn.onclick = ()=>{ adminSession=null; sessionStorage.removeItem("adminSession"); goHome(); };
   exportCsvBtn.onclick = async ()=>{
@@ -474,10 +400,7 @@ async function renderRegistrationTab(body){
 // ---------------- TAB: Access ----------------
 async function renderAccessTab(body){
   const isSuperAdmin = adminSession.tier === "super_admin";
-  body.innerHTML = `<div class="section-title" style="margin-top:0">Add User</div>
-  <p style="color:var(--muted);font-size:12px;margin-top:-4px">${isSuperAdmin ? "Create and approve a user directly — skips the self-registration + approval queue entirely." : "Super Admin only."}</p>
-  <div id="addUserPanel">${isSuperAdmin ? "" : `<div class="empty">Super Admin only.</div>`}</div>
-  <div class="section-title">Admin Accounts</div>
+  body.innerHTML = `<div class="section-title" style="margin-top:0">Admin Accounts</div>
   <div id="adminAccounts">Loading…</div>
   <div class="section-title">Regional Manager Admin-Access Verification</div>
   <p style="color:var(--muted);font-size:12px;margin-top:-4px">Regional Managers get full admin (tree) access only after Super Admin verifies them here.</p>
@@ -496,7 +419,6 @@ async function renderAccessTab(body){
   renderHubMappingPanel();
   renderTaggingGraphPanel();
   if(isSuperAdmin){
-    renderAddUserPanel();
     loadRmVerifyList();
     loadAccessTierList();
     renderFormBuilderPanel();
@@ -504,106 +426,6 @@ async function renderAccessTab(body){
     document.getElementById("rmVerifyList").innerHTML = `<div class="empty">Super Admin only.</div>`;
     document.getElementById("accessTierList").innerHTML = `<div class="empty">Super Admin only.</div>`;
   }
-}
-
-// ---------------- Add User panel (Super Admin only) ----------------
-function renderAddUserPanel(){
-  const el = document.getElementById("addUserPanel");
-  el.innerHTML = `<div class="content-card">
-    <label>Full Name *</label><input class="field" id="auName">
-    <label>Mobile Number *</label><input class="field" id="auPhone">
-    <label>Email ID *</label><input class="field" id="auEmail" type="email">
-    <label>Designated Role *</label>
-    <select class="field" id="auRole"></select>
-    <div id="auTaggedWrap">
-      <label>Reporting To (search by name) *</label>
-      <input class="field" id="auTaggedSearch" placeholder="Start typing a name…" autocomplete="off">
-      <input type="hidden" id="auTaggedId">
-      <div id="auTaggedList" class="hidden" style="border:1px solid var(--border);border-radius:6px;max-height:160px;overflow-y:auto;margin-top:-6px;margin-bottom:10px"></div>
-    </div>
-    <label>City Name *</label><input class="field" id="auCity" list="auCityList">
-    <datalist id="auCityList"></datalist>
-    <label>Hub / DC / FC Name *</label><input class="field" id="auHub" list="auHubList">
-    <datalist id="auHubList"></datalist>
-    <label>4-digit PIN (leave blank to auto-generate)</label>
-    <input class="field" id="auPin" maxlength="4" inputmode="numeric" placeholder="e.g. 4821">
-    <div id="auCustomFields"></div>
-    <button class="btn btn-primary btn-sm" id="auSubmit" style="width:100%;margin-top:8px">＋ Add &amp; Approve User</button>
-    <div id="auMsg"></div>
-  </div>`;
-
-  renderCustomFieldsInto("auCustomFields");
-  const sel = document.getElementById("auRole");
-  PERSONAS.forEach(p=>{ const o=document.createElement("option"); o.value=p; o.textContent=p; sel.appendChild(o); });
-
-  const taggedWrap = document.getElementById("auTaggedWrap");
-  const taggedInput = document.getElementById("auTaggedSearch");
-  const taggedList = document.getElementById("auTaggedList");
-  wireUserTypeahead({
-    inputEl: taggedInput, hiddenIdEl: document.getElementById("auTaggedId"), listEl: taggedList,
-    fetchCandidates: async (q)=>{ try{ return await api("/api/tag-candidates?forRole="+encodeURIComponent(sel.value)+"&q="+encodeURIComponent(q)); }catch(e){ return []; } }
-  });
-  function refreshTaggedVisibility(){
-    taggedWrap.style.display = sel.value==="Regional Manager" ? "none" : "";
-  }
-  sel.onchange = ()=>{ taggedInput.value=""; document.getElementById("auTaggedId").value=""; refreshTaggedVisibility(); };
-  refreshTaggedVisibility();
-
-  loadAdminHubMapping().then(mapping=>{
-    const cities = [...new Set(mapping.map(m=>m.city))];
-    document.getElementById("auCityList").innerHTML = cities.map(c=>`<option value="${escapeAttr(c)}">`).join("");
-    const cityInput = document.getElementById("auCity");
-    const hubList = document.getElementById("auHubList");
-    function refreshHubOptions(){
-      const cityVal = cityInput.value.trim().toLowerCase();
-      const matches = mapping.filter(m=>m.city.trim().toLowerCase()===cityVal);
-      const pool = matches.length ? matches : mapping;
-      hubList.innerHTML = [...new Set(pool.map(m=>m.hub))].map(h=>`<option value="${escapeAttr(h)}">`).join("");
-    }
-    cityInput.addEventListener("input", refreshHubOptions);
-    refreshHubOptions();
-  });
-
-  document.getElementById("auSubmit").onclick = async ()=>{
-    const msgEl = document.getElementById("auMsg");
-    const role = sel.value;
-    const taggedTo = document.getElementById("auTaggedId").value;
-    const pin = document.getElementById("auPin").value.trim();
-    const data = {
-      name: document.getElementById("auName").value.trim(),
-      phone: document.getElementById("auPhone").value.trim(),
-      email: document.getElementById("auEmail").value.trim(),
-      city: document.getElementById("auCity").value.trim(),
-      hub: document.getElementById("auHub").value.trim(),
-      role, pin: pin || undefined, taggedTo: role==="Regional Manager" ? undefined : taggedTo,
-      customFields: collectCustomFieldValues("auCustomFields")
-    };
-    if(!data.name || !data.phone || !data.email || !data.hub || !data.city){
-      msgEl.innerHTML = `<div class="msg msg-danger">All fields are required.</div>`; return;
-    }
-    if(role!=="Regional Manager" && !taggedTo){
-      msgEl.innerHTML = `<div class="msg msg-danger">Pick who this user reports to from the search results — typing a name alone isn't enough.</div>`; return;
-    }
-    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)){ msgEl.innerHTML = `<div class="msg msg-danger">Enter a valid email address.</div>`; return; }
-    if(!/^\d{7,15}$/.test(data.phone.replace(/[\s\-+]/g,""))){ msgEl.innerHTML = `<div class="msg msg-danger">Enter a valid mobile number.</div>`; return; }
-    if(pin && !/^\d{4}$/.test(pin)){ msgEl.innerHTML = `<div class="msg msg-danger">PIN must be exactly 4 digits (or leave it blank).</div>`; return; }
-    if(!validateRequiredCustomFields("auCustomFields", msgEl)) return;
-    try{
-      const result = await api("/api/admin/users", {method:"POST", body: JSON.stringify(data)});
-      msgEl.innerHTML = `<div class="msg msg-ok">Added ${escapeHtml(result.profile.name)} — Login PIN: <b>${escapeHtml(result.profile.pin)}</b> (share this with them).</div>`;
-      ["auName","auPhone","auEmail","auCity","auHub","auPin"].forEach(id=>document.getElementById(id).value="");
-      taggedInput.value=""; document.getElementById("auTaggedId").value="";
-    }catch(e){
-      const reason = (e.data && e.data.error) || "";
-      const known = {
-        already_registered: "That phone number or email is already registered.",
-        tagging_hierarchy_violation: "That person isn't above this role in the hierarchy — pick someone senior enough.",
-        invalid_tagged_to: "Couldn't find that person — pick one from the search results.",
-        tagging_required: "Pick who this user reports to from the search results."
-      };
-      msgEl.innerHTML = `<div class="msg msg-danger">${escapeHtml(known[reason] || "Could not add user. Please try again.")}</div>`;
-    }
-  };
 }
 async function loadRmVerifyList(){
   const el = document.getElementById("rmVerifyList");
@@ -619,73 +441,25 @@ async function loadRmVerifyList(){
     });
   }catch(e){ el.innerHTML = `<div class="empty">Could not load.</div>`; }
 }
-let accessTierRows = null; // cached so search filtering doesn't re-fetch
 async function loadAccessTierList(){
   const el = document.getElementById("accessTierList");
   try{
-    accessTierRows = await api("/api/admin/users");
-    el.innerHTML = `<input class="field" id="accessTierSearch" placeholder="🔎 Search by name, phone, email, or role…">
-      <div style="max-height:480px;overflow-y:auto;border:1px solid var(--border);border-radius:8px">
-        <table>
-          <thead><tr style="position:sticky;top:0;background:var(--card);z-index:1">
-            <th>Name</th><th>Role</th><th>Status</th><th>Access Tier</th><th></th><th></th>
-          </tr></thead>
-          <tbody id="accessTierBody"></tbody>
-        </table>
-      </div>`;
-    renderAccessTierRows(accessTierRows);
-    document.getElementById("accessTierSearch").addEventListener("input", (e)=>{
-      const q = e.target.value.trim().toLowerCase();
-      const filtered = !q ? accessTierRows : accessTierRows.filter(({data:p})=>
-        (p.name||"").toLowerCase().includes(q) || (p.phone||"").toLowerCase().includes(q) ||
-        (p.email||"").toLowerCase().includes(q) || (p.primaryRole||"").toLowerCase().includes(q));
-      renderAccessTierRows(filtered);
+    const rows = await api("/api/admin/users");
+    el.innerHTML = rows.map(({id,data:p})=>`<div class="content-card row">
+      <div style="flex:1;min-width:160px"><b>${escapeHtml(p.name)}</b> <span class="pill">${escapeHtml(p.primaryRole||"")}</span></div>
+      <select class="field" style="max-width:160px" data-tier="${escapeAttr(id)}">
+        ${["view","semi_admin","admin","admin_pending"].map(t=>`<option value="${t}" ${p.accessTier===t?"selected":""}>${t}</option>`).join("")}
+      </select>
+      <button class="btn btn-sm" data-savetier="${escapeAttr(id)}">Save</button>
+    </div>`).join("");
+    el.querySelectorAll("[data-savetier]").forEach(btn=>{
+      btn.onclick = async ()=>{
+        const sel = el.querySelector(`[data-tier="${btn.dataset.savetier}"]`);
+        try{ await api("/api/admin/users/"+btn.dataset.savetier+"/access-tier", {method:"POST", body: JSON.stringify({tier: sel.value})}); showToast("Updated."); }
+        catch(e){ showToast("Could not update."); }
+      };
     });
   }catch(e){ el.innerHTML = `<div class="empty">Could not load.</div>`; }
-}
-function renderAccessTierRows(rows){
-  const body = document.getElementById("accessTierBody");
-  if(rows.length===0){ body.innerHTML = `<tr><td colspan="6" class="empty">No matching users.</td></tr>`; return; }
-  const now = Date.now();
-  body.innerHTML = rows.map(({id,data:p})=>{
-    const isInactive = !p.lastLogin || (now - p.lastLogin) > (1000*60*60*24*30*6);
-    return `<tr>
-      <td><b>${escapeHtml(p.name)}</b><br><span style="color:var(--muted);font-size:11px">${escapeHtml(p.phone||"")}</span></td>
-      <td><span class="pill">${escapeHtml(p.primaryRole||"")}</span></td>
-      <td><span class="pill" style="${isInactive?'color:var(--danger)':'color:var(--ok)'}">${isInactive?"Inactive":"Active"}</span></td>
-      <td><select class="field" style="min-width:130px;margin:0" data-tier="${escapeAttr(id)}">
-        ${["view","semi_admin","admin","admin_pending"].map(t=>`<option value="${t}" ${p.accessTier===t?"selected":""}>${t}</option>`).join("")}
-      </select></td>
-      <td><button class="btn btn-sm" data-savetier="${escapeAttr(id)}">Save</button></td>
-      <td><button class="btn btn-sm btn-danger" data-removeuser="${escapeAttr(id)}" data-name="${escapeAttr(p.name)}">Remove</button></td>
-    </tr>`;
-  }).join("");
-  body.querySelectorAll("[data-savetier]").forEach(btn=>{
-    btn.onclick = async ()=>{
-      const sel = body.querySelector(`[data-tier="${btn.dataset.savetier}"]`);
-      try{ await api("/api/admin/users/"+btn.dataset.savetier+"/access-tier", {method:"POST", body: JSON.stringify({tier: sel.value})}); showToast("Updated."); }
-      catch(e){ showToast("Could not update."); }
-    };
-  });
-  // Super Admin only — this whole section only ever renders for Super
-  // Admin (see renderAccessTab), so no separate gate is needed here. The
-  // existing per-user "Revoke" in the Assign Task tab is unchanged and
-  // still usable by any admin managing their own team — this is a second,
-  // Super-Admin-only way to remove a user, useful for pruning long-inactive
-  // accounts directly from this list without hunting through Assign Task.
-  body.querySelectorAll("[data-removeuser]").forEach(btn=>{
-    btn.onclick = (e)=> armConfirm(e.target, async ()=>{
-      try{
-        await api("/api/admin/users/"+btn.dataset.removeuser, {method:"DELETE"});
-        showToast("Removed "+btn.dataset.name+".");
-        accessTierRows = accessTierRows.filter(r=>r.id!==btn.dataset.removeuser);
-        const q = document.getElementById("accessTierSearch").value.trim().toLowerCase();
-        renderAccessTierRows(!q ? accessTierRows : accessTierRows.filter(({data:p})=>
-          (p.name||"").toLowerCase().includes(q) || (p.phone||"").toLowerCase().includes(q) ||
-          (p.email||"").toLowerCase().includes(q) || (p.primaryRole||"").toLowerCase().includes(q)));
-      }catch(e){ showToast("Could not remove user."); }
-    });
-  });
 }
 let taggingGraphChart = null;
 async function renderTaggingGraphPanel(){
@@ -702,23 +476,29 @@ async function renderTaggingGraphPanel(){
   drawTaggingGraph();
 }
 async function drawTaggingGraph(){
-  let data;
-  try{ data = await api("/api/admin/stats/tagging"); }catch(e){ return; }
-  const type = document.getElementById("tagGraphType").value;
-  const ctx = document.getElementById("tagGraphCanvas").getContext("2d");
-  if(taggingGraphChart) taggingGraphChart.destroy();
-  const higherPersonas = PERSONAS.filter(p=>p!=="Scanner"); // nothing is ever tagged to a Scanner
-  const subPersonas = PERSONAS.filter(p=>p!=="Regional Manager"); // RM never reports to anyone, so never appears as a subordinate
-  const colors = ["#1f8a4c","#2f6fed","#a86a00","#c0392b","#7a4fd1"];
-  if(type==="donut"){
-    const totals = subPersonas.map(sp => higherPersonas.reduce((sum,hp)=> sum + ((data[hp]||{})[sp]||0), 0));
-    taggingGraphChart = new Chart(ctx, { type:"doughnut", data:{ labels: subPersonas, datasets:[{ data: totals, backgroundColor: colors }] } });
-  } else {
-    taggingGraphChart = new Chart(ctx, {
-      type:"bar",
-      data:{ labels: higherPersonas, datasets: subPersonas.map((sp,i)=>({ label: sp, data: higherPersonas.map(hp=>(data[hp]||{})[sp]||0), backgroundColor: colors[i%colors.length] })) },
-      options:{ responsive:true, scales:{ x:{stacked:true}, y:{stacked:true} } }
-    });
+  const canvasWrap = document.getElementById("tagGraphCanvas").parentElement;
+  try{
+    const data = await api("/api/admin/stats/tagging");
+    if(typeof Chart==="undefined") throw new Error("Chart.js failed to load (check network/ad-blocker)");
+    const type = document.getElementById("tagGraphType").value;
+    const ctx = document.getElementById("tagGraphCanvas").getContext("2d");
+    if(taggingGraphChart) taggingGraphChart.destroy();
+    const higherPersonas = PERSONAS.filter(p=>p!=="Scanner"); // nothing is ever tagged to a Scanner
+    const subPersonas = PERSONAS.filter(p=>p!=="Regional Manager"); // RM never reports to anyone, so never appears as a subordinate
+    const colors = ["#1f8a4c","#2f6fed","#a86a00","#c0392b","#7a4fd1"];
+    if(type==="donut"){
+      const totals = subPersonas.map(sp => higherPersonas.reduce((sum,hp)=> sum + ((data[hp]||{})[sp]||0), 0));
+      taggingGraphChart = new Chart(ctx, { type:"doughnut", data:{ labels: subPersonas, datasets:[{ data: totals, backgroundColor: colors }] } });
+    } else {
+      taggingGraphChart = new Chart(ctx, {
+        type:"bar",
+        data:{ labels: higherPersonas, datasets: subPersonas.map((sp,i)=>({ label: sp, data: higherPersonas.map(hp=>(data[hp]||{})[sp]||0), backgroundColor: colors[i%colors.length] })) },
+        options:{ responsive:true, scales:{ x:{stacked:true}, y:{stacked:true} } }
+      });
+    }
+  }catch(e){
+    console.error("Tagging graph failed:", e);
+    canvasWrap.innerHTML = `<div class="msg msg-danger">Could not load the tagging graph (${escapeHtml(e.message||"unknown error")}).</div><canvas id="tagGraphCanvas" height="100"></canvas>`;
   }
 }
 async function renderFormBuilderPanel(){
@@ -771,8 +551,7 @@ function renderTaggingPanel(){
   </div>`;
   document.getElementById("dlTaggingCsvBtn").onclick = ()=>{
     fetch(API+"/api/admin/tagging/export-csv", {headers:{Authorization:"Bearer "+adminSession.token}})
-      .then(r=>{ if(!r.ok) throw new Error("http_"+r.status); return r.blob(); })
-      .then(blob=>{
+      .then(r=>r.blob()).then(blob=>{
         const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="tagging-export.csv"; a.click();
       }).catch(()=>showToast("Download failed."));
   };
@@ -934,22 +713,12 @@ async function loadAllUsers(){
   try{ rows = await api("/api/admin/users"); }
   catch(e){ el.innerHTML = `<div class="empty">Could not load users.</div>`; return; }
   if(rows.length===0){ el.innerHTML = `<div class="empty">No users assigned yet.</div>`; return; }
-  const isSuperAdmin = adminSession.tier === "super_admin";
-  const nameById = {}; rows.forEach(({id,data:p})=>{ nameById[id] = p.name; });
   el.innerHTML = "";
   rows.forEach(({id,data:p})=>{
     const row = document.createElement("div");
     row.className="content-card row";
     const currentRoles = p.roles || (p.role ? [p.role] : []);
     const isInactive = !p.lastLogin || (Date.now()-p.lastLogin) > (1000*60*60*24*30*6);
-    // Only Super Admin can re-tag directly, and Regional Manager has no
-    // one above it to report to (same as the registration form's rule).
-    const tagBlockHtml = (isSuperAdmin && p.primaryRole!=="Regional Manager") ? `
-      <label>Reporting To</label>
-      <input class="field" id="tagSearch_${id}" placeholder="${escapeAttr(nameById[p.taggedTo]||"Start typing a name…")}" autocomplete="off">
-      <input type="hidden" id="tagId_${id}">
-      <div id="tagList_${id}" class="hidden" style="border:1px solid var(--border);border-radius:6px;max-height:160px;overflow-y:auto;margin-top:-6px;margin-bottom:10px"></div>
-      <button class="btn btn-sm" data-savetag>Save Reporting To</button>` : "";
     row.innerHTML = `<div style="flex:1;min-width:160px"><b>${escapeHtml(p.name||"(unnamed)")}</b> <span class="pill" style="font-size:10px">${p.primaryRole?escapeHtml(p.primaryRole):""}</span> <span class="pill" style="font-size:10px;${isInactive?'color:var(--danger)':'color:var(--ok)'}">${isInactive?"Inactive":"Active"}</span><br>
     <span style="color:var(--muted);font-size:12px">${escapeHtml(p.hub)} ${p.city?"· "+escapeHtml(p.city):""} · ${escapeHtml(p.phone||"")}</span></div>
     <div style="flex:2;min-width:240px">
@@ -959,7 +728,6 @@ async function loadAllUsers(){
         <button class="btn btn-sm" data-pin>Reset PIN</button>
         <button class="btn btn-sm btn-danger" data-revoke>Revoke</button>
       </div>
-      ${tagBlockHtml}
     </div>`;
     row.querySelector("[data-pin]").onclick = async ()=>{
       try{
@@ -975,27 +743,6 @@ async function loadAllUsers(){
       try{ await api("/api/admin/users/"+id+"/roles", {method:"POST", body: JSON.stringify({roles:newRoles})}); showToast("Updated."); }
       catch(e){ showToast("Save failed."); }
     };
-    if(isSuperAdmin && p.primaryRole!=="Regional Manager"){
-      const tagInput = document.getElementById("tagSearch_"+id);
-      const tagList = document.getElementById("tagList_"+id);
-      wireUserTypeahead({
-        inputEl: tagInput, hiddenIdEl: document.getElementById("tagId_"+id), listEl: tagList,
-        fetchCandidates: async (q)=>{ try{ return await api("/api/tag-candidates?forRole="+encodeURIComponent(p.primaryRole)+"&q="+encodeURIComponent(q)); }catch(e){ return []; } }
-      });
-      row.querySelector("[data-savetag]").onclick = async ()=>{
-        const newTaggedTo = document.getElementById("tagId_"+id).value;
-        if(!newTaggedTo){ showToast("Pick a name from the search results first."); return; }
-        try{
-          await api("/api/admin/users/"+id+"/tag", {method:"POST", body: JSON.stringify({taggedTo:newTaggedTo})});
-          showToast("Reporting To updated.");
-        }catch(e){
-          const reason = (e.data && e.data.error) || "";
-          if(reason==="tagging_hierarchy_violation") showToast("That person isn't above this user in the hierarchy.");
-          else if(reason==="cannot_tag_self") showToast("A user can't report to themselves.");
-          else showToast("Could not update.");
-        }
-      };
-    }
     row.querySelector("[data-revoke]").onclick = (e)=> armConfirm(e.target, async ()=>{
       try{
         const result = await api("/api/admin/users/"+id, {method:"DELETE"});
@@ -1091,34 +838,40 @@ async function loadAndDrawStats(){
   const city = document.getElementById("statsCity").value;
   const metric = document.getElementById("statsMetric").value;
   const type = document.getElementById("statsChartType").value;
-  let data;
-  try{ data = await api("/api/admin/stats/summary"+(city?"?city="+encodeURIComponent(city):"")); }
-  catch(e){ return; }
-  const hubs = data.hubs || [];
-  const labels = hubs.map(h=>h.hub);
-  const ctx = document.getElementById("statsCanvas").getContext("2d");
-  if(statsChart) statsChart.destroy();
-  const colors = ["#1f8a4c","#a86a00","#c0392b"];
-  if(labels.length===0){
-    document.getElementById("personaBreakdown").innerHTML = `<div class="empty">No users to show yet.</div>`;
-    return;
-  }
-  const series = metric==="activity"
-    ? [{label:"Active", data:hubs.map(h=>h.active), color:colors[0]}, {label:"Inactive", data:hubs.map(h=>h.inactive), color:colors[2]}]
-    : [{label:"Completed", data:hubs.map(h=>h.completed), color:colors[0]}, {label:"Ongoing", data:hubs.map(h=>h.ongoing), color:colors[1]}, {label:"Pending", data:hubs.map(h=>h.pending), color:colors[2]}];
+  const canvasWrap = document.getElementById("statsCanvas").parentElement;
+  try{
+    const data = await api("/api/admin/stats/summary"+(city?"?city="+encodeURIComponent(city):""));
+    const hubs = data.hubs || [];
+    const labels = hubs.map(h=>h.hub);
+    if(labels.length===0){
+      document.getElementById("personaBreakdown").innerHTML = `<div class="empty">No users to show yet.</div>`;
+      if(statsChart){ statsChart.destroy(); statsChart=null; }
+      return;
+    }
+    if(typeof Chart==="undefined") throw new Error("Chart.js failed to load (check network/ad-blocker — it's loaded from cdnjs.cloudflare.com)");
+    const ctx = document.getElementById("statsCanvas").getContext("2d");
+    if(statsChart) statsChart.destroy();
+    const colors = ["#1f8a4c","#a86a00","#c0392b"];
+    const series = metric==="activity"
+      ? [{label:"Active", data:hubs.map(h=>h.active), color:colors[0]}, {label:"Inactive", data:hubs.map(h=>h.inactive), color:colors[2]}]
+      : [{label:"Completed", data:hubs.map(h=>h.completed), color:colors[0]}, {label:"Ongoing", data:hubs.map(h=>h.ongoing), color:colors[1]}, {label:"Pending", data:hubs.map(h=>h.pending), color:colors[2]}];
 
-  if(type==="donut"){
-    const totals = series.map(s=>s.data.reduce((a,b)=>a+b,0));
-    statsChart = new Chart(ctx, { type:"doughnut", data:{ labels: series.map(s=>s.label), datasets:[{ data: totals, backgroundColor: series.map(s=>s.color) }] } });
-  } else {
-    statsChart = new Chart(ctx, {
-      type:"bar",
-      data:{ labels, datasets: series.map(s=>({ label:s.label, data:s.data, backgroundColor:s.color })) },
-      options: { responsive:true, scales: type==="stacked" ? { x:{stacked:true}, y:{stacked:true} } : {}, onClick: (evt, els)=>{ if(els.length && metric==="completion"){ const hub = labels[els[0].index]; state.statsHub = hub; loadPersonaBreakdown(hub); } } }
-    });
+    if(type==="donut"){
+      const totals = series.map(s=>s.data.reduce((a,b)=>a+b,0));
+      statsChart = new Chart(ctx, { type:"doughnut", data:{ labels: series.map(s=>s.label), datasets:[{ data: totals, backgroundColor: series.map(s=>s.color) }] } });
+    } else {
+      statsChart = new Chart(ctx, {
+        type:"bar",
+        data:{ labels, datasets: series.map(s=>({ label:s.label, data:s.data, backgroundColor:s.color })) },
+        options: { responsive:true, scales: type==="stacked" ? { x:{stacked:true}, y:{stacked:true} } : {}, onClick: (evt, els)=>{ if(els.length && metric==="completion"){ const hub = labels[els[0].index]; state.statsHub = hub; loadPersonaBreakdown(hub); } } }
+      });
+    }
+    document.getElementById("personaBreakdown").innerHTML = metric==="completion" ? `<p style="font-size:11px;color:var(--muted)">Click a hub's bar above to see the persona-wise breakdown for that hub.</p>` : "";
+    if(metric==="completion" && state.statsHub && labels.includes(state.statsHub)) loadPersonaBreakdown(state.statsHub);
+  }catch(e){
+    console.error("Completion graph failed:", e);
+    canvasWrap.innerHTML = `<div class="msg msg-danger">Could not load the completion graph (${escapeHtml(e.message||"unknown error")}). Check the browser console for details, or try reloading.</div><canvas id="statsCanvas" height="90"></canvas>`;
   }
-  document.getElementById("personaBreakdown").innerHTML = metric==="completion" ? `<p style="font-size:11px;color:var(--muted)">Click a hub's bar above to see the persona-wise breakdown for that hub.</p>` : "";
-  if(metric==="completion" && state.statsHub && labels.includes(state.statsHub)) loadPersonaBreakdown(state.statsHub);
 }
 async function loadPersonaBreakdown(hub){
   const el = document.getElementById("personaBreakdown");
