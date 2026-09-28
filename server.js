@@ -516,10 +516,10 @@ app.get("/api/admin/tagging/export-csv", async (req, res) => {
     const { data: profiles, error } = await sb.from("profiles").select("id,name,phone,email,primary_role,tagged_to").eq("status", "approved").limit(2000);
     ok(error);
     const byId = {}; (profiles || []).forEach(p => { byId[p.id] = p; });
-    const header = ["Name", "Phone", "Email", "Tagged Name", "Tagged Designation", "Tagged Number"];
+    const header = ["Name", "Role", "Phone", "Email", "Tagged Name", "Tagged Designation", "Tagged Number"];
     const rows = (profiles || []).map(p => {
       const target = p.tagged_to ? byId[p.tagged_to] : null;
-      return [p.name, p.phone, p.email, target ? target.name : "", target ? target.primary_role : "", target ? target.phone : ""];
+      return [p.name, p.primary_role || "", p.phone, p.email, target ? target.name : "", target ? target.primary_role : "", target ? target.phone : ""];
     });
     const csv = [header, ...rows].map(r => r.map(csvEscape).join(",")).join("\r\n");
     res.setHeader("Content-Type", "text/csv");
