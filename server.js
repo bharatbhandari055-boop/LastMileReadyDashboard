@@ -504,15 +504,16 @@ app.post("/api/admin/bulk-tagging", upload.single("file"), async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
 });
 
-// =========================================================
-// ADMIN: Download all current tagging as a CSV — the read side of the
-// upload above. Same six columns, in the same order, so a downloaded
-// file can be edited and re-uploaded through /api/admin/bulk-tagging
-// without reshaping it.
-// =========================================================
+// Was missing entirely — admin.html's "Download all current tagging"
+// button called this URL but no matching route existed, so every click
+// silently got a 404 (fetch() doesn't reject on HTTP error status, so the
+// browser just downloaded the error body as if it were a real .csv).
+// Column names/order match what /api/admin/bulk-tagging expects on
+// re-upload — "Tagged Number" is a phone number, not an internal id, same
+// as the upload side matches by.
 app.get("/api/admin/tagging/export-csv", async (req, res) => {
   try {
-    const { data: profiles, error } = await sb.from("profiles").select("id,name,phone,email,primary_role,tagged_to,status").eq("status", "approved").limit(5000);
+    const { data: profiles, error } = await sb.from("profiles").select("name,phone,email,primary_role,tagged_to").eq("status", "approved").limit(2000);
     ok(error);
     const byId = {}; (profiles || []).forEach(p => { byId[p.id] = p; });
     const header = ["Name", "Phone", "Email", "Tagged Name", "Tagged Designation", "Tagged Number"];
@@ -522,7 +523,7 @@ app.get("/api/admin/tagging/export-csv", async (req, res) => {
     });
     const csv = [header, ...rows].map(r => r.map(csvEscape).join(",")).join("\r\n");
     res.setHeader("Content-Type", "text/csv");
-    res.setHeader("Content-Disposition", `attachment; filename="tagging-export.csv"`);
+    res.setHeader("Content-Disposition", `attachment; filename="tagging-export_${Date.now()}.csv"`);
     res.send(csv);
   } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
 });

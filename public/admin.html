@@ -723,7 +723,8 @@ function renderTaggingPanel(){
   </div>`;
   document.getElementById("dlTaggingCsvBtn").onclick = ()=>{
     fetch(API+"/api/admin/tagging/export-csv", {headers:{Authorization:"Bearer "+adminSession.token}})
-      .then(r=>r.blob()).then(blob=>{
+      .then(r=>{ if(!r.ok) throw new Error("http_"+r.status); return r.blob(); })
+      .then(blob=>{
         const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="tagging-export.csv"; a.click();
       }).catch(()=>showToast("Download failed."));
   };
