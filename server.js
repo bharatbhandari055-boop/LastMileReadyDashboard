@@ -513,7 +513,7 @@ app.post("/api/admin/bulk-tagging", upload.single("file"), async (req, res) => {
 // as the upload side matches by.
 app.get("/api/admin/tagging/export-csv", async (req, res) => {
   try {
-    const { data: profiles, error } = await sb.from("profiles").select("name,phone,email,primary_role,tagged_to").eq("status", "approved").limit(2000);
+    const { data: profiles, error } = await sb.from("profiles").select("id,name,phone,email,primary_role,tagged_to").eq("status", "approved").limit(2000);
     ok(error);
     const byId = {}; (profiles || []).forEach(p => { byId[p.id] = p; });
     const header = ["Name", "Phone", "Email", "Tagged Name", "Tagged Designation", "Tagged Number"];
