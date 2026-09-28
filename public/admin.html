@@ -619,25 +619,73 @@ async function loadRmVerifyList(){
     });
   }catch(e){ el.innerHTML = `<div class="empty">Could not load.</div>`; }
 }
+let accessTierRows = null; // cached so search filtering doesn't re-fetch
 async function loadAccessTierList(){
   const el = document.getElementById("accessTierList");
   try{
-    const rows = await api("/api/admin/users");
-    el.innerHTML = rows.map(({id,data:p})=>`<div class="content-card row">
-      <div style="flex:1;min-width:160px"><b>${escapeHtml(p.name)}</b> <span class="pill">${escapeHtml(p.primaryRole||"")}</span></div>
-      <select class="field" style="max-width:160px" data-tier="${escapeAttr(id)}">
-        ${["view","semi_admin","admin","admin_pending"].map(t=>`<option value="${t}" ${p.accessTier===t?"selected":""}>${t}</option>`).join("")}
-      </select>
-      <button class="btn btn-sm" data-savetier="${escapeAttr(id)}">Save</button>
-    </div>`).join("");
-    el.querySelectorAll("[data-savetier]").forEach(btn=>{
-      btn.onclick = async ()=>{
-        const sel = el.querySelector(`[data-tier="${btn.dataset.savetier}"]`);
-        try{ await api("/api/admin/users/"+btn.dataset.savetier+"/access-tier", {method:"POST", body: JSON.stringify({tier: sel.value})}); showToast("Updated."); }
-        catch(e){ showToast("Could not update."); }
-      };
+    accessTierRows = await api("/api/admin/users");
+    el.innerHTML = `<input class="field" id="accessTierSearch" placeholder="🔎 Search by name, phone, email, or role…">
+      <div style="max-height:480px;overflow-y:auto;border:1px solid var(--border);border-radius:8px">
+        <table>
+          <thead><tr style="position:sticky;top:0;background:var(--card);z-index:1">
+            <th>Name</th><th>Role</th><th>Status</th><th>Access Tier</th><th></th><th></th>
+          </tr></thead>
+          <tbody id="accessTierBody"></tbody>
+        </table>
+      </div>`;
+    renderAccessTierRows(accessTierRows);
+    document.getElementById("accessTierSearch").addEventListener("input", (e)=>{
+      const q = e.target.value.trim().toLowerCase();
+      const filtered = !q ? accessTierRows : accessTierRows.filter(({data:p})=>
+        (p.name||"").toLowerCase().includes(q) || (p.phone||"").toLowerCase().includes(q) ||
+        (p.email||"").toLowerCase().includes(q) || (p.primaryRole||"").toLowerCase().includes(q));
+      renderAccessTierRows(filtered);
     });
   }catch(e){ el.innerHTML = `<div class="empty">Could not load.</div>`; }
+}
+function renderAccessTierRows(rows){
+  const body = document.getElementById("accessTierBody");
+  if(rows.length===0){ body.innerHTML = `<tr><td colspan="6" class="empty">No matching users.</td></tr>`; return; }
+  const now = Date.now();
+  body.innerHTML = rows.map(({id,data:p})=>{
+    const isInactive = !p.lastLogin || (now - p.lastLogin) > (1000*60*60*24*30*6);
+    return `<tr>
+      <td><b>${escapeHtml(p.name)}</b><br><span style="color:var(--muted);font-size:11px">${escapeHtml(p.phone||"")}</span></td>
+      <td><span class="pill">${escapeHtml(p.primaryRole||"")}</span></td>
+      <td><span class="pill" style="${isInactive?'color:var(--danger)':'color:var(--ok)'}">${isInactive?"Inactive":"Active"}</span></td>
+      <td><select class="field" style="min-width:130px;margin:0" data-tier="${escapeAttr(id)}">
+        ${["view","semi_admin","admin","admin_pending"].map(t=>`<option value="${t}" ${p.accessTier===t?"selected":""}>${t}</option>`).join("")}
+      </select></td>
+      <td><button class="btn btn-sm" data-savetier="${escapeAttr(id)}">Save</button></td>
+      <td><button class="btn btn-sm btn-danger" data-removeuser="${escapeAttr(id)}" data-name="${escapeAttr(p.name)}">Remove</button></td>
+    </tr>`;
+  }).join("");
+  body.querySelectorAll("[data-savetier]").forEach(btn=>{
+    btn.onclick = async ()=>{
+      const sel = body.querySelector(`[data-tier="${btn.dataset.savetier}"]`);
+      try{ await api("/api/admin/users/"+btn.dataset.savetier+"/access-tier", {method:"POST", body: JSON.stringify({tier: sel.value})}); showToast("Updated."); }
+      catch(e){ showToast("Could not update."); }
+    };
+  });
+  // Super Admin only — this whole section only ever renders for Super
+  // Admin (see renderAccessTab), so no separate gate is needed here. The
+  // existing per-user "Revoke" in the Assign Task tab is unchanged and
+  // still usable by any admin managing their own team — this is a second,
+  // Super-Admin-only way to remove a user, useful for pruning long-inactive
+  // accounts directly from this list without hunting through Assign Task.
+  body.querySelectorAll("[data-removeuser]").forEach(btn=>{
+    btn.onclick = (e)=> armConfirm(e.target, async ()=>{
+      try{
+        await api("/api/admin/users/"+btn.dataset.removeuser, {method:"DELETE"});
+        showToast("Removed "+btn.dataset.name+".");
+        accessTierRows = accessTierRows.filter(r=>r.id!==btn.dataset.removeuser);
+        const q = document.getElementById("accessTierSearch").value.trim().toLowerCase();
+        renderAccessTierRows(!q ? accessTierRows : accessTierRows.filter(({data:p})=>
+          (p.name||"").toLowerCase().includes(q) || (p.phone||"").toLowerCase().includes(q) ||
+          (p.email||"").toLowerCase().includes(q) || (p.primaryRole||"").toLowerCase().includes(q)));
+      }catch(e){ showToast("Could not remove user."); }
+    });
+  });
 }
 let taggingGraphChart = null;
 async function renderTaggingGraphPanel(){
