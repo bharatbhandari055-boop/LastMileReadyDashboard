@@ -594,10 +594,13 @@ async function loadMyTeamList(){
   try{
     const { team } = await api("/api/my-team?uid="+encodeURIComponent(currentUid()));
     el.innerHTML = team.length===0 ? `<div class="empty">No one tagged to you yet.</div>` :
-      team.map(({id,data:p})=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;padding:4px 0;border-bottom:1px solid var(--border)">
-        <span><b>${escapeHtml(p.name)}</b> — ${escapeHtml(p.primaryRole||"")} · ${escapeHtml(p.hub||"")}</span>
+      team.map(({id,data:p,status})=>{
+        const s = status || {assigned:0, completed:0, pending:0};
+        return `<div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;padding:4px 0;border-bottom:1px solid var(--border);flex-wrap:wrap;gap:6px">
+        <span><b>${escapeHtml(p.name)}</b> — ${escapeHtml(p.primaryRole||"")} · ${escapeHtml(p.hub||"")} — <span style="color:var(--muted)">Assigned: ${s.assigned} · Pending: ${s.pending} · Completed: ${s.completed}</span></span>
         <button class="btn btn-sm btn-danger" data-revoke="${escapeAttr(id)}">Revoke</button>
-      </div>`).join("");
+      </div>`;
+      }).join("");
     el.querySelectorAll("[data-revoke]").forEach(btn=>{
       btn.onclick = async ()=>{
         if(!confirm("Revoke this user's access?")) return;

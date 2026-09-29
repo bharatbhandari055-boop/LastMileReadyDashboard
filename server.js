@@ -129,6 +129,7 @@ app.post("/api/register", async (req, res) => {
       // Their registration is approved directly by Super Admin instead.
     } else {
       if (!taggedTo) return res.status(400).json({ error: "tagging_required" });
+      if (taggedTo === uid) return res.status(400).json({ error: "cannot_tag_self" });
       const { data: target } = await sb.from("profiles").select("id,name,primary_role,status").eq("id", taggedTo).maybeSingle();
       if (!target || target.status !== "approved") return res.status(400).json({ error: "invalid_tagged_to" });
       if (!allowedTagTargets(role).includes(target.primary_role)) return res.status(400).json({ error: "tagging_hierarchy_violation" });
@@ -489,6 +490,7 @@ app.post("/api/admin/bulk-tagging", upload.single("file"), async (req, res) => {
         if (!subject || subject.status !== "approved") { results.push({ phone: cleanPhone, status: "error", reason: "user_not_found" }); continue; }
         const { data: target } = await sb.from("profiles").select("id,name,primary_role,status").eq("phone", taggedNumber).maybeSingle();
         if (!target || target.status !== "approved") { results.push({ phone: cleanPhone, status: "error", reason: "tagged_person_not_found" }); continue; }
+        if (subject.id === target.id) { results.push({ phone: cleanPhone, status: "error", reason: "cannot_tag_self" }); continue; }
         if (!allowedTagTargets(subject.primary_role).includes(target.primary_role)) {
           results.push({ phone: cleanPhone, status: "error", reason: "tagging_hierarchy_violation" });
           continue;
@@ -811,7 +813,36 @@ app.get("/api/my-team", async (req, res) => {
       // semi_admin: direct reports only.
       team = (allProfiles || []).filter(p => p.tagged_to === uid);
     }
-    res.json({ tier: me.access_tier, team: team.map(p => ({ id: p.id, data: toProfilePayload(p, true) })) });
+    // Safety net: a user should never appear inside their own team list
+    // (and never get a self-revoke option), however the data got there.
+    team = team.filter(p => p.id !== uid);
+
+    // Per-report content status: Assigned (role-based content total, same
+    // definition the admin completion graphs use) / Completed / Pending
+    // (assigned minus completed minus in-progress) for each team member,
+    // across every persona in their roles[].
+    const contentCache = {};
+    async function contentFor(persona) {
+      if (!contentCache[persona]) {
+        const { data } = await sb.from("content").select("id").eq("persona", persona);
+        contentCache[persona] = data || [];
+      }
+      return contentCache[persona];
+    }
+    const teamWithStatus = [];
+    for (const p of team) {
+      let assigned = 0, completed = 0, ongoing = 0;
+      for (const persona of (p.roles || [])) {
+        const items = await contentFor(persona);
+        const id = slug(persona) + "_" + p.id;
+        const { data: prog } = await sb.from("progress").select("completed,started").eq("id", id).maybeSingle();
+        const completedSet = (prog && prog.completed) || {}, startedSet = (prog && prog.started) || {};
+        assigned += items.length;
+        items.forEach(it => { if (completedSet[it.id]) completed++; else if (startedSet[it.id]) ongoing++; });
+      }
+      teamWithStatus.push({ id: p.id, data: toProfilePayload(p, true), status: { assigned, completed, pending: assigned - completed - ongoing, ongoing } });
+    }
+    res.json({ tier: me.access_tier, team: teamWithStatus });
   } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
 });
 // Edit/remove a team member — restricted server-side to people actually
