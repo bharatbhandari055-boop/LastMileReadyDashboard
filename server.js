@@ -795,9 +795,12 @@ app.get("/api/my-team", async (req, res) => {
 
     const { data: allProfiles } = await sb.from("profiles").select("*").eq("status", "approved");
     let team;
-    if (me.access_tier === "admin") {
+    if (me.access_tier === "admin" || me.access_tier === "semi_admin") {
       // Recursive downstream: everyone reachable by following tagged_to
-      // chains back up to me, however many levels deep.
+      // chains back up to me, however many levels deep. Applies to
+      // Hub Manager and above / City Lead (semi_admin) and Regional
+      // Manager (admin) alike — Scanner/Team Leader never reach this
+      // endpoint at all (access_tier "view" is blocked above).
       const byTag = {};
       (allProfiles || []).forEach(p => { if (p.tagged_to) (byTag[p.tagged_to] ||= []).push(p); });
       const result = [];
@@ -810,8 +813,7 @@ app.get("/api/my-team", async (req, res) => {
       }
       team = result;
     } else {
-      // semi_admin: direct reports only.
-      team = (allProfiles || []).filter(p => p.tagged_to === uid);
+      team = [];
     }
     // Safety net: a user should never appear inside their own team list
     // (and never get a self-revoke option), however the data got there.
@@ -845,6 +847,45 @@ app.get("/api/my-team", async (req, res) => {
     res.json({ tier: me.access_tier, team: teamWithStatus });
   } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
 });
+// Per-topic completion breakdown for one team member — the detail view
+// behind clicking their Assigned/Pending/Completed numbers. Same
+// reachability check as revoke: only someone inside the caller's own
+// downstream tree can be inspected this way.
+app.get("/api/my-team/:targetId/topic-summary", async (req, res) => {
+  try {
+    const uid = String(req.query.uid || "");
+    const targetId = req.params.targetId;
+    const { data: me } = await sb.from("profiles").select("access_tier").eq("id", uid).eq("status", "approved").maybeSingle();
+    if (!me || (me.access_tier !== "semi_admin" && me.access_tier !== "admin")) return res.status(403).json({ error: "not_authorized" });
+    const inTree = await isInDownstreamTree(uid, targetId, true);
+    if (!inTree) return res.status(403).json({ error: "not_in_your_team" });
+    const { data: target } = await sb.from("profiles").select("*").eq("id", targetId).maybeSingle();
+    if (!target) return res.status(404).json({ error: "not_found" });
+
+    const topics = [];
+    for (const persona of (target.roles || [])) {
+      const { data: items } = await sb.from("content").select("id,topic").eq("persona", persona);
+      const id = slug(persona) + "_" + target.id;
+      const { data: prog } = await sb.from("progress").select("completed,started").eq("id", id).maybeSingle();
+      const completedSet = (prog && prog.completed) || {}, startedSet = (prog && prog.started) || {};
+      const byTopic = {};
+      (items || []).forEach(it => {
+        const t = it.topic || "General";
+        const key = persona + "::" + t;
+        byTopic[key] ||= { persona, topic: t, total: 0, completed: 0, ongoing: 0 };
+        byTopic[key].total++;
+        if (completedSet[it.id]) byTopic[key].completed++;
+        else if (startedSet[it.id]) byTopic[key].ongoing++;
+      });
+      Object.values(byTopic).forEach(t => {
+        t.pending = t.total - t.completed - t.ongoing;
+        t.status = t.completed === t.total ? "Completed" : (t.completed > 0 || t.ongoing > 0) ? "Ongoing" : "Pending";
+        topics.push(t);
+      });
+    }
+    res.json({ name: target.name, topics });
+  } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
+});
 // Edit/remove a team member — restricted server-side to people actually
 // inside the caller's own tree (same reachability check as /api/my-team).
 app.post("/api/my-team/:targetId/revoke", async (req, res) => {
@@ -853,7 +894,7 @@ app.post("/api/my-team/:targetId/revoke", async (req, res) => {
     const targetId = req.params.targetId;
     const { data: me } = await sb.from("profiles").select("*").eq("id", uid).eq("status", "approved").maybeSingle();
     if (!me || (me.access_tier !== "semi_admin" && me.access_tier !== "admin")) return res.status(403).json({ error: "not_authorized" });
-    const inTree = await isInDownstreamTree(uid, targetId, me.access_tier === "admin");
+    const inTree = await isInDownstreamTree(uid, targetId, me.access_tier === "admin" || me.access_tier === "semi_admin");
     if (!inTree) return res.status(403).json({ error: "not_in_your_team" });
     const { data: snap } = await sb.from("profiles").select("name").eq("id", targetId).maybeSingle();
     const { error } = await sb.from("profiles").delete().eq("id", targetId);

@@ -596,9 +596,14 @@ async function loadMyTeamList(){
     el.innerHTML = team.length===0 ? `<div class="empty">No one tagged to you yet.</div>` :
       team.map(({id,data:p,status})=>{
         const s = status || {assigned:0, completed:0, pending:0};
-        return `<div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;padding:4px 0;border-bottom:1px solid var(--border);flex-wrap:wrap;gap:6px">
-        <span><b>${escapeHtml(p.name)}</b> — ${escapeHtml(p.primaryRole||"")} · ${escapeHtml(p.hub||"")} — <span style="color:var(--muted)">Assigned: ${s.assigned} · Pending: ${s.pending} · Completed: ${s.completed}</span></span>
-        <button class="btn btn-sm btn-danger" data-revoke="${escapeAttr(id)}">Revoke</button>
+        return `<div style="padding:4px 0;border-bottom:1px solid var(--border)">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;font-size:13px">
+          <span><b>${escapeHtml(p.name)}</b> — ${escapeHtml(p.primaryRole||"")} · ${escapeHtml(p.hub||"")} —
+            <a href="#" class="teamStatusLink" data-target="${escapeAttr(id)}" style="color:var(--accent,#2f6fed);text-decoration:underline">Assigned: ${s.assigned} · Pending: ${s.pending} · Completed: ${s.completed}</a>
+          </span>
+          <button class="btn btn-sm btn-danger" data-revoke="${escapeAttr(id)}">Revoke</button>
+        </div>
+        <div id="teamDetail_${escapeAttr(id)}" class="hidden" style="margin-top:6px"></div>
       </div>`;
       }).join("");
     el.querySelectorAll("[data-revoke]").forEach(btn=>{
@@ -608,7 +613,33 @@ async function loadMyTeamList(){
         catch(e){ showToast("Could not revoke."); }
       };
     });
+    el.querySelectorAll(".teamStatusLink").forEach(link=>{
+      link.onclick = (e)=>{
+        e.preventDefault();
+        const targetId = link.dataset.target;
+        const detailEl = document.getElementById("teamDetail_"+targetId);
+        if(!detailEl.classList.contains("hidden")){ detailEl.classList.add("hidden"); return; }
+        loadTeamMemberTopicSummary(targetId, detailEl);
+      };
+    });
   }catch(e){ el.innerHTML = `<div class="empty">Could not load team.</div>`; }
+}
+async function loadTeamMemberTopicSummary(targetId, detailEl){
+  detailEl.classList.remove("hidden");
+  detailEl.innerHTML = `<div class="empty">Loading…</div>`;
+  try{
+    const { topics } = await api("/api/my-team/"+targetId+"/topic-summary?uid="+encodeURIComponent(currentUid()));
+    if(topics.length===0){ detailEl.innerHTML = `<div class="empty">No content assigned yet.</div>`; return; }
+    const badge = s => s==="Completed" ? '<span class="tag" style="background:#e6f6ec;color:var(--ok)">✅ Completed</span>'
+      : s==="Ongoing" ? '<span class="tag" style="background:#fff3e0;color:#a86a00">🟡 Ongoing</span>'
+      : '<span class="tag" style="background:#fdecea;color:var(--danger)">⏳ Pending</span>';
+    detailEl.innerHTML = `<table style="width:100%;font-size:12px;border-collapse:collapse">
+      <tr style="text-align:left;color:var(--muted)"><th>Persona</th><th>Topic/Module</th><th>Status</th><th>Progress</th></tr>
+      ${topics.map(t=>`<tr style="border-top:1px solid var(--border)">
+        <td>${escapeHtml(t.persona)}</td><td>${escapeHtml(t.topic)}</td><td>${badge(t.status)}</td><td>${t.completed}/${t.total} done</td>
+      </tr>`).join("")}
+    </table>`;
+  }catch(e){ detailEl.innerHTML = `<div class="empty">Could not load details.</div>`; }
 }
 
 async function loadContentAndProgress(p){
