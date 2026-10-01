@@ -49,22 +49,7 @@ th,td{border-bottom:1px solid var(--border);padding:6px;text-align:left;}
 .card-narrow{max-width:420px;margin:30px auto;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:22px;}
 .toast{position:fixed;bottom:calc(16px + env(safe-area-inset-bottom,0px));left:50%;transform:translateX(-50%);background:#1a1d23;color:#fff;padding:10px 16px;border-radius:8px;font-size:13px;z-index:100;max-width:90%;text-align:center;box-shadow:0 4px 14px rgba(0,0,0,.3);white-space:pre-line;display:none;}
 </style>
-<script>
-// Chart.js, with an automatic fallback across two independent CDNs. If
-// cdnjs is blocked by a network filter or browser extension (this is a
-// known false-positive on some ad-blocker lists), jsDelivr is tried next
-// automatically — no admin action needed either way.
-(function loadChartJs(urls, i){
-  if(i>=urls.length){ console.error("Chart.js failed to load from every CDN tried."); return; }
-  const s = document.createElement("script");
-  s.src = urls[i];
-  s.onerror = ()=>{ console.warn("Chart.js failed to load from "+urls[i]+" — trying next source."); loadChartJs(urls, i+1); };
-  document.head.appendChild(s);
-})([
-  "https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js",
-  "https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"
-], 0);
-</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
 </head>
 <body>
 <header>
@@ -82,6 +67,31 @@ th,td{border-bottom:1px solid var(--border);padding:6px;text-align:left;}
 <script>
 const API = ""; // same origin
 const PERSONAS = ["Scanner","Team Leader","Hub Manager and above","City Lead","Regional Manager"];
+// Keep in sync with MAX_UPLOAD_MB in server.js — only used here for the
+// helper text/warnings on the upload form, the server enforces the real limit.
+const MAX_UPLOAD_MB = 400;
+// MM:SS <-> minutes helpers for the "required watch time" field. Storage
+// stays as decimal minutes (content.required_minutes) — only the admin
+// input/display is MM:SS.
+function mmssToSeconds(str){
+  const m = /^(\d{1,2}):([0-5]\d)$/.exec(String(str||"").trim());
+  if(!m) return null;
+  return parseInt(m[1],10)*60 + parseInt(m[2],10);
+}
+function minutesToMmss(mins){
+  const totalSecs = Math.round(Number(mins||0)*60);
+  const mm = Math.floor(totalSecs/60), ss = totalSecs%60;
+  return String(mm).padStart(2,"0")+":"+String(ss).padStart(2,"0");
+}
+// Accepts a full YouTube URL (watch/youtu.be/embed/shorts) or a bare video ID.
+function extractYoutubeId(url){
+  url = String(url||"").trim();
+  let m = /[?&]v=([a-zA-Z0-9_-]{6,})/.exec(url); if(m) return m[1];
+  m = /youtu\.be\/([a-zA-Z0-9_-]{6,})/.exec(url); if(m) return m[1];
+  m = /youtube\.com\/(?:embed|shorts)\/([a-zA-Z0-9_-]{6,})/.exec(url); if(m) return m[1];
+  if(/^[a-zA-Z0-9_-]{6,}$/.test(url)) return url;
+  return null;
+}
 const slug = p => p.replace(/[^a-zA-Z0-9]/g,"_");
 const app = document.getElementById("app");
 const crumbSub = document.getElementById("crumbSub");
@@ -136,82 +146,8 @@ async function apiUpload(path, formData){
   const res = await fetch(API+path, {method:"POST", headers, body: formData});
   let data=null;
   try{ data = await res.json(); }catch(e){}
-  if(!res.ok){ const err=new Error((data&&data.error)||"upload_failed"); err.status=res.status; throw err; }
+  if(!res.ok){ const err=new Error((data&&data.error)||"upload_failed"); err.status=res.status; err.data=data; throw err; }
   return data;
-}
-
-// ---------------- Reusable: registration-style helpers, ported from
-// index.html for the Add User panel (Access tab, Super Admin only) so it
-// behaves identically to the public registration form. ----------------
-let formFieldsCache = null;
-async function loadFormFields(){
-  if(!formFieldsCache){ try{ formFieldsCache = await api("/api/form-fields"); }catch(e){ formFieldsCache = []; } }
-  return formFieldsCache;
-}
-async function renderCustomFieldsInto(containerId, existingValues){
-  const container = document.getElementById(containerId);
-  if(!container) return;
-  const fields = await loadFormFields();
-  const vals = existingValues || {};
-  container.innerHTML = fields.map(f=>{
-    const val = vals[f.fieldKey] || "";
-    const reqStar = f.required ? " *" : "";
-    if(f.type==="dropdown"){
-      return `<label>${escapeHtml(f.label)}${reqStar}</label><select class="field" data-custom-field="${escapeAttr(f.fieldKey)}">
-        <option value=""></option>
-        ${f.options.map(o=>`<option value="${escapeAttr(o)}" ${o===val?"selected":""}>${escapeHtml(o)}</option>`).join("")}
-      </select>`;
-    }
-    const inputType = f.type==="number" ? "number" : f.type==="date" ? "date" : "text";
-    return `<label>${escapeHtml(f.label)}${reqStar}</label><input class="field" type="${inputType}" data-custom-field="${escapeAttr(f.fieldKey)}" value="${escapeAttr(val)}">`;
-  }).join("");
-}
-function collectCustomFieldValues(containerId){
-  const container = document.getElementById(containerId);
-  if(!container) return {};
-  const out = {};
-  container.querySelectorAll("[data-custom-field]").forEach(el=>{ out[el.dataset.customField] = el.value.trim(); });
-  return out;
-}
-function validateRequiredCustomFields(containerId, msgEl){
-  const container = document.getElementById(containerId);
-  if(!container) return true;
-  let ok = true;
-  container.querySelectorAll("[data-custom-field]").forEach(el=>{
-    const label = el.previousElementSibling ? el.previousElementSibling.textContent : el.dataset.customField;
-    if(label.trim().endsWith("*") && !el.value.trim()) ok = false;
-  });
-  if(!ok) msgEl.innerHTML = `<div class="msg msg-danger">Please fill in all required fields.</div>`;
-  return ok;
-}
-// Same typeahead pattern as the public registration form's "Reporting To"
-// picker — only matching names shown as you type, selection via
-// mousedown (fires before blur, so a click on a row always registers).
-function wireUserTypeahead({inputEl, hiddenIdEl, listEl, fetchCandidates}){
-  let debounceTimer;
-  inputEl.addEventListener("input", ()=>{
-    hiddenIdEl.value = "";
-    clearTimeout(debounceTimer);
-    const q = inputEl.value.trim();
-    debounceTimer = setTimeout(async ()=>{
-      if(q.length<1){ listEl.innerHTML=""; listEl.classList.add("hidden"); return; }
-      const candidates = await fetchCandidates(q);
-      if(candidates.length===0){ listEl.innerHTML = `<div style="padding:6px;color:var(--muted);font-size:12px">No matching names.</div>`; listEl.classList.remove("hidden"); return; }
-      listEl.innerHTML = candidates.map(c=>`<div class="typeahead-row" data-id="${escapeAttr(c.id)}" data-name="${escapeAttr(c.name)}" style="padding:6px;cursor:pointer;border-bottom:1px solid var(--border)"><b>${escapeHtml(c.name)}</b> <span style="color:var(--muted);font-size:12px">${escapeHtml(c.primaryRole||c.primary_role||"")} · ${escapeHtml(c.hub||"")}</span></div>`).join("");
-      listEl.classList.remove("hidden");
-      listEl.querySelectorAll("[data-id]").forEach(row=>{
-        row.addEventListener("mousedown", (e)=>{
-          e.preventDefault();
-          hiddenIdEl.value = row.dataset.id;
-          inputEl.value = row.dataset.name;
-          listEl.innerHTML=""; listEl.classList.add("hidden");
-        });
-      });
-    }, 200);
-  });
-  document.addEventListener("click", (e)=>{
-    if(e.target!==inputEl && !listEl.contains(e.target)) listEl.classList.add("hidden");
-  });
 }
 
 async function init(){
@@ -489,10 +425,7 @@ async function renderRegistrationTab(body){
 // ---------------- TAB: Access ----------------
 async function renderAccessTab(body){
   const isSuperAdmin = adminSession.tier === "super_admin";
-  body.innerHTML = `<div class="section-title" style="margin-top:0">Add User</div>
-  <p style="color:var(--muted);font-size:12px;margin-top:-4px">${isSuperAdmin ? "Create and approve a user directly — skips the self-registration + approval queue entirely." : "Super Admin only."}</p>
-  <div id="addUserPanel">${isSuperAdmin ? "" : `<div class="empty">Super Admin only.</div>`}</div>
-  <div class="section-title">Admin Accounts</div>
+  body.innerHTML = `<div class="section-title" style="margin-top:0">Admin Accounts</div>
   <div id="adminAccounts">Loading…</div>
   <div class="section-title">Regional Manager Admin-Access Verification</div>
   <p style="color:var(--muted);font-size:12px;margin-top:-4px">Regional Managers get full admin (tree) access only after Super Admin verifies them here.</p>
@@ -511,7 +444,6 @@ async function renderAccessTab(body){
   renderHubMappingPanel();
   renderTaggingGraphPanel();
   if(isSuperAdmin){
-    renderAddUserPanel();
     loadRmVerifyList();
     loadAccessTierList();
     renderFormBuilderPanel();
@@ -519,106 +451,6 @@ async function renderAccessTab(body){
     document.getElementById("rmVerifyList").innerHTML = `<div class="empty">Super Admin only.</div>`;
     document.getElementById("accessTierList").innerHTML = `<div class="empty">Super Admin only.</div>`;
   }
-}
-
-// ---------------- Add User panel (Super Admin only) ----------------
-function renderAddUserPanel(){
-  const el = document.getElementById("addUserPanel");
-  el.innerHTML = `<div class="content-card">
-    <label>Full Name *</label><input class="field" id="auName">
-    <label>Mobile Number *</label><input class="field" id="auPhone">
-    <label>Email ID *</label><input class="field" id="auEmail" type="email">
-    <label>Designated Role *</label>
-    <select class="field" id="auRole"></select>
-    <div id="auTaggedWrap">
-      <label>Reporting To (search by name) *</label>
-      <input class="field" id="auTaggedSearch" placeholder="Start typing a name…" autocomplete="off">
-      <input type="hidden" id="auTaggedId">
-      <div id="auTaggedList" class="hidden" style="border:1px solid var(--border);border-radius:6px;max-height:160px;overflow-y:auto;margin-top:-6px;margin-bottom:10px"></div>
-    </div>
-    <label>City Name *</label><input class="field" id="auCity" list="auCityList">
-    <datalist id="auCityList"></datalist>
-    <label>Hub / DC / FC Name *</label><input class="field" id="auHub" list="auHubList">
-    <datalist id="auHubList"></datalist>
-    <label>4-digit PIN (leave blank to auto-generate)</label>
-    <input class="field" id="auPin" maxlength="4" inputmode="numeric" placeholder="e.g. 4821">
-    <div id="auCustomFields"></div>
-    <button class="btn btn-primary btn-sm" id="auSubmit" style="width:100%;margin-top:8px">＋ Add &amp; Approve User</button>
-    <div id="auMsg"></div>
-  </div>`;
-
-  renderCustomFieldsInto("auCustomFields");
-  const sel = document.getElementById("auRole");
-  PERSONAS.forEach(p=>{ const o=document.createElement("option"); o.value=p; o.textContent=p; sel.appendChild(o); });
-
-  const taggedWrap = document.getElementById("auTaggedWrap");
-  const taggedInput = document.getElementById("auTaggedSearch");
-  const taggedList = document.getElementById("auTaggedList");
-  wireUserTypeahead({
-    inputEl: taggedInput, hiddenIdEl: document.getElementById("auTaggedId"), listEl: taggedList,
-    fetchCandidates: async (q)=>{ try{ return await api("/api/tag-candidates?forRole="+encodeURIComponent(sel.value)+"&q="+encodeURIComponent(q)); }catch(e){ return []; } }
-  });
-  function refreshTaggedVisibility(){
-    taggedWrap.style.display = sel.value==="Regional Manager" ? "none" : "";
-  }
-  sel.onchange = ()=>{ taggedInput.value=""; document.getElementById("auTaggedId").value=""; refreshTaggedVisibility(); };
-  refreshTaggedVisibility();
-
-  loadAdminHubMapping().then(mapping=>{
-    const cities = [...new Set(mapping.map(m=>m.city))];
-    document.getElementById("auCityList").innerHTML = cities.map(c=>`<option value="${escapeAttr(c)}">`).join("");
-    const cityInput = document.getElementById("auCity");
-    const hubList = document.getElementById("auHubList");
-    function refreshHubOptions(){
-      const cityVal = cityInput.value.trim().toLowerCase();
-      const matches = mapping.filter(m=>m.city.trim().toLowerCase()===cityVal);
-      const pool = matches.length ? matches : mapping;
-      hubList.innerHTML = [...new Set(pool.map(m=>m.hub))].map(h=>`<option value="${escapeAttr(h)}">`).join("");
-    }
-    cityInput.addEventListener("input", refreshHubOptions);
-    refreshHubOptions();
-  });
-
-  document.getElementById("auSubmit").onclick = async ()=>{
-    const msgEl = document.getElementById("auMsg");
-    const role = sel.value;
-    const taggedTo = document.getElementById("auTaggedId").value;
-    const pin = document.getElementById("auPin").value.trim();
-    const data = {
-      name: document.getElementById("auName").value.trim(),
-      phone: document.getElementById("auPhone").value.trim(),
-      email: document.getElementById("auEmail").value.trim(),
-      city: document.getElementById("auCity").value.trim(),
-      hub: document.getElementById("auHub").value.trim(),
-      role, pin: pin || undefined, taggedTo: role==="Regional Manager" ? undefined : taggedTo,
-      customFields: collectCustomFieldValues("auCustomFields")
-    };
-    if(!data.name || !data.phone || !data.email || !data.hub || !data.city){
-      msgEl.innerHTML = `<div class="msg msg-danger">All fields are required.</div>`; return;
-    }
-    if(role!=="Regional Manager" && !taggedTo){
-      msgEl.innerHTML = `<div class="msg msg-danger">Pick who this user reports to from the search results — typing a name alone isn't enough.</div>`; return;
-    }
-    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)){ msgEl.innerHTML = `<div class="msg msg-danger">Enter a valid email address.</div>`; return; }
-    if(!/^\d{7,15}$/.test(data.phone.replace(/[\s\-+]/g,""))){ msgEl.innerHTML = `<div class="msg msg-danger">Enter a valid mobile number.</div>`; return; }
-    if(pin && !/^\d{4}$/.test(pin)){ msgEl.innerHTML = `<div class="msg msg-danger">PIN must be exactly 4 digits (or leave it blank).</div>`; return; }
-    if(!validateRequiredCustomFields("auCustomFields", msgEl)) return;
-    try{
-      const result = await api("/api/admin/users", {method:"POST", body: JSON.stringify(data)});
-      msgEl.innerHTML = `<div class="msg msg-ok">Added ${escapeHtml(result.profile.name)} — Login PIN: <b>${escapeHtml(result.profile.pin)}</b> (share this with them).</div>`;
-      ["auName","auPhone","auEmail","auCity","auHub","auPin"].forEach(id=>document.getElementById(id).value="");
-      taggedInput.value=""; document.getElementById("auTaggedId").value="";
-    }catch(e){
-      const reason = (e.data && e.data.error) || "";
-      const known = {
-        already_registered: "That phone number or email is already registered.",
-        tagging_hierarchy_violation: "That person isn't above this role in the hierarchy — pick someone senior enough.",
-        invalid_tagged_to: "Couldn't find that person — pick one from the search results.",
-        tagging_required: "Pick who this user reports to from the search results."
-      };
-      msgEl.innerHTML = `<div class="msg msg-danger">${escapeHtml(known[reason] || "Could not add user. Please try again.")}</div>`;
-    }
-  };
 }
 async function loadRmVerifyList(){
   const el = document.getElementById("rmVerifyList");
@@ -634,73 +466,25 @@ async function loadRmVerifyList(){
     });
   }catch(e){ el.innerHTML = `<div class="empty">Could not load.</div>`; }
 }
-let accessTierRows = null; // cached so search filtering doesn't re-fetch
 async function loadAccessTierList(){
   const el = document.getElementById("accessTierList");
   try{
-    accessTierRows = await api("/api/admin/users");
-    el.innerHTML = `<input class="field" id="accessTierSearch" placeholder="🔎 Search by name, phone, email, or role…">
-      <div style="max-height:480px;overflow-y:auto;border:1px solid var(--border);border-radius:8px">
-        <table>
-          <thead><tr style="position:sticky;top:0;background:var(--card);z-index:1">
-            <th>Name</th><th>Role</th><th>Status</th><th>Access Tier</th><th></th><th></th>
-          </tr></thead>
-          <tbody id="accessTierBody"></tbody>
-        </table>
-      </div>`;
-    renderAccessTierRows(accessTierRows);
-    document.getElementById("accessTierSearch").addEventListener("input", (e)=>{
-      const q = e.target.value.trim().toLowerCase();
-      const filtered = !q ? accessTierRows : accessTierRows.filter(({data:p})=>
-        (p.name||"").toLowerCase().includes(q) || (p.phone||"").toLowerCase().includes(q) ||
-        (p.email||"").toLowerCase().includes(q) || (p.primaryRole||"").toLowerCase().includes(q));
-      renderAccessTierRows(filtered);
+    const rows = await api("/api/admin/users");
+    el.innerHTML = rows.map(({id,data:p})=>`<div class="content-card row">
+      <div style="flex:1;min-width:160px"><b>${escapeHtml(p.name)}</b> <span class="pill">${escapeHtml(p.primaryRole||"")}</span></div>
+      <select class="field" style="max-width:160px" data-tier="${escapeAttr(id)}">
+        ${["view","semi_admin","admin","admin_pending"].map(t=>`<option value="${t}" ${p.accessTier===t?"selected":""}>${t}</option>`).join("")}
+      </select>
+      <button class="btn btn-sm" data-savetier="${escapeAttr(id)}">Save</button>
+    </div>`).join("");
+    el.querySelectorAll("[data-savetier]").forEach(btn=>{
+      btn.onclick = async ()=>{
+        const sel = el.querySelector(`[data-tier="${btn.dataset.savetier}"]`);
+        try{ await api("/api/admin/users/"+btn.dataset.savetier+"/access-tier", {method:"POST", body: JSON.stringify({tier: sel.value})}); showToast("Updated."); }
+        catch(e){ showToast("Could not update."); }
+      };
     });
   }catch(e){ el.innerHTML = `<div class="empty">Could not load.</div>`; }
-}
-function renderAccessTierRows(rows){
-  const body = document.getElementById("accessTierBody");
-  if(rows.length===0){ body.innerHTML = `<tr><td colspan="6" class="empty">No matching users.</td></tr>`; return; }
-  const now = Date.now();
-  body.innerHTML = rows.map(({id,data:p})=>{
-    const isInactive = !p.lastLogin || (now - p.lastLogin) > (1000*60*60*24*30*6);
-    return `<tr>
-      <td><b>${escapeHtml(p.name)}</b><br><span style="color:var(--muted);font-size:11px">${escapeHtml(p.phone||"")}</span></td>
-      <td><span class="pill">${escapeHtml(p.primaryRole||"")}</span></td>
-      <td><span class="pill" style="${isInactive?'color:var(--danger)':'color:var(--ok)'}">${isInactive?"Inactive":"Active"}</span></td>
-      <td><select class="field" style="min-width:130px;margin:0" data-tier="${escapeAttr(id)}">
-        ${["view","semi_admin","admin","admin_pending"].map(t=>`<option value="${t}" ${p.accessTier===t?"selected":""}>${t}</option>`).join("")}
-      </select></td>
-      <td><button class="btn btn-sm" data-savetier="${escapeAttr(id)}">Save</button></td>
-      <td><button class="btn btn-sm btn-danger" data-removeuser="${escapeAttr(id)}" data-name="${escapeAttr(p.name)}">Remove</button></td>
-    </tr>`;
-  }).join("");
-  body.querySelectorAll("[data-savetier]").forEach(btn=>{
-    btn.onclick = async ()=>{
-      const sel = body.querySelector(`[data-tier="${btn.dataset.savetier}"]`);
-      try{ await api("/api/admin/users/"+btn.dataset.savetier+"/access-tier", {method:"POST", body: JSON.stringify({tier: sel.value})}); showToast("Updated."); }
-      catch(e){ showToast("Could not update."); }
-    };
-  });
-  // Super Admin only — this whole section only ever renders for Super
-  // Admin (see renderAccessTab), so no separate gate is needed here. The
-  // existing per-user "Revoke" in the Assign Task tab is unchanged and
-  // still usable by any admin managing their own team — this is a second,
-  // Super-Admin-only way to remove a user, useful for pruning long-inactive
-  // accounts directly from this list without hunting through Assign Task.
-  body.querySelectorAll("[data-removeuser]").forEach(btn=>{
-    btn.onclick = (e)=> armConfirm(e.target, async ()=>{
-      try{
-        await api("/api/admin/users/"+btn.dataset.removeuser, {method:"DELETE"});
-        showToast("Removed "+btn.dataset.name+".");
-        accessTierRows = accessTierRows.filter(r=>r.id!==btn.dataset.removeuser);
-        const q = document.getElementById("accessTierSearch").value.trim().toLowerCase();
-        renderAccessTierRows(!q ? accessTierRows : accessTierRows.filter(({data:p})=>
-          (p.name||"").toLowerCase().includes(q) || (p.phone||"").toLowerCase().includes(q) ||
-          (p.email||"").toLowerCase().includes(q) || (p.primaryRole||"").toLowerCase().includes(q)));
-      }catch(e){ showToast("Could not remove user."); }
-    });
-  });
 }
 let taggingGraphChart = null;
 async function renderTaggingGraphPanel(){
@@ -776,21 +560,11 @@ async function renderFormBuilderPanel(){
 function renderTaggingPanel(){
   const el = document.getElementById("taggingPanel");
   el.innerHTML = `<div class="content-card">
-    <div class="top-actions">
-      <button class="btn btn-sm" id="dlTaggingCsvBtn">⬇ Download all current tagging (CSV)</button>
-    </div>
-    <p style="font-size:12px;color:var(--muted);margin-top:10px">Bulk-set tagging for existing users via spreadsheet. Columns: <b>Name, Phone, Email, Tagged Name, Tagged Designation, Tagged Number</b> — matched by Phone (subject) and Tagged Number (the person they report to); a row is rejected if the tagged person isn't actually above the subject in the hierarchy.</p>
+    <p style="font-size:12px;color:var(--muted);margin-top:0">Bulk-set tagging for existing users via spreadsheet. Columns: <b>Name, Phone, Email, Tagged Name, Tagged Designation, Tagged Number</b> — matched by Phone (subject) and Tagged Number (the person they report to); a row is rejected if the tagged person isn't actually above the subject in the hierarchy.</p>
     <input class="field" type="file" id="tagBulkFile" accept=".xlsx,.xls,.csv">
     <button class="btn btn-primary btn-sm" id="tagBulkSubmit">⬆ Upload Tagging</button>
     <div id="tagBulkResult"></div>
   </div>`;
-  document.getElementById("dlTaggingCsvBtn").onclick = ()=>{
-    fetch(API+"/api/admin/tagging/export-csv", {headers:{Authorization:"Bearer "+adminSession.token}})
-      .then(r=>{ if(!r.ok) throw new Error("http_"+r.status); return r.blob(); })
-      .then(blob=>{
-        const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="tagging-export.csv"; a.click();
-      }).catch(()=>showToast("Download failed."));
-  };
   document.getElementById("tagBulkSubmit").onclick = async ()=>{
     const fileInput = document.getElementById("tagBulkFile");
     const resEl = document.getElementById("tagBulkResult");
@@ -949,22 +723,12 @@ async function loadAllUsers(){
   try{ rows = await api("/api/admin/users"); }
   catch(e){ el.innerHTML = `<div class="empty">Could not load users.</div>`; return; }
   if(rows.length===0){ el.innerHTML = `<div class="empty">No users assigned yet.</div>`; return; }
-  const isSuperAdmin = adminSession.tier === "super_admin";
-  const nameById = {}; rows.forEach(({id,data:p})=>{ nameById[id] = p.name; });
   el.innerHTML = "";
   rows.forEach(({id,data:p})=>{
     const row = document.createElement("div");
     row.className="content-card row";
     const currentRoles = p.roles || (p.role ? [p.role] : []);
     const isInactive = !p.lastLogin || (Date.now()-p.lastLogin) > (1000*60*60*24*30*6);
-    // Only Super Admin can re-tag directly, and Regional Manager has no
-    // one above it to report to (same as the registration form's rule).
-    const tagBlockHtml = (isSuperAdmin && p.primaryRole!=="Regional Manager") ? `
-      <label>Reporting To</label>
-      <input class="field" id="tagSearch_${id}" placeholder="${escapeAttr(nameById[p.taggedTo]||"Start typing a name…")}" autocomplete="off">
-      <input type="hidden" id="tagId_${id}">
-      <div id="tagList_${id}" class="hidden" style="border:1px solid var(--border);border-radius:6px;max-height:160px;overflow-y:auto;margin-top:-6px;margin-bottom:10px"></div>
-      <button class="btn btn-sm" data-savetag>Save Reporting To</button>` : "";
     row.innerHTML = `<div style="flex:1;min-width:160px"><b>${escapeHtml(p.name||"(unnamed)")}</b> <span class="pill" style="font-size:10px">${p.primaryRole?escapeHtml(p.primaryRole):""}</span> <span class="pill" style="font-size:10px;${isInactive?'color:var(--danger)':'color:var(--ok)'}">${isInactive?"Inactive":"Active"}</span><br>
     <span style="color:var(--muted);font-size:12px">${escapeHtml(p.hub)} ${p.city?"· "+escapeHtml(p.city):""} · ${escapeHtml(p.phone||"")}</span></div>
     <div style="flex:2;min-width:240px">
@@ -974,7 +738,6 @@ async function loadAllUsers(){
         <button class="btn btn-sm" data-pin>Reset PIN</button>
         <button class="btn btn-sm btn-danger" data-revoke>Revoke</button>
       </div>
-      ${tagBlockHtml}
     </div>`;
     row.querySelector("[data-pin]").onclick = async ()=>{
       try{
@@ -990,27 +753,6 @@ async function loadAllUsers(){
       try{ await api("/api/admin/users/"+id+"/roles", {method:"POST", body: JSON.stringify({roles:newRoles})}); showToast("Updated."); }
       catch(e){ showToast("Save failed."); }
     };
-    if(isSuperAdmin && p.primaryRole!=="Regional Manager"){
-      const tagInput = document.getElementById("tagSearch_"+id);
-      const tagList = document.getElementById("tagList_"+id);
-      wireUserTypeahead({
-        inputEl: tagInput, hiddenIdEl: document.getElementById("tagId_"+id), listEl: tagList,
-        fetchCandidates: async (q)=>{ try{ return await api("/api/tag-candidates?forRole="+encodeURIComponent(p.primaryRole)+"&q="+encodeURIComponent(q)); }catch(e){ return []; } }
-      });
-      row.querySelector("[data-savetag]").onclick = async ()=>{
-        const newTaggedTo = document.getElementById("tagId_"+id).value;
-        if(!newTaggedTo){ showToast("Pick a name from the search results first."); return; }
-        try{
-          await api("/api/admin/users/"+id+"/tag", {method:"POST", body: JSON.stringify({taggedTo:newTaggedTo})});
-          showToast("Reporting To updated.");
-        }catch(e){
-          const reason = (e.data && e.data.error) || "";
-          if(reason==="tagging_hierarchy_violation") showToast("That person isn't above this user in the hierarchy.");
-          else if(reason==="cannot_tag_self") showToast("A user can't report to themselves.");
-          else showToast("Could not update.");
-        }
-      };
-    }
     row.querySelector("[data-revoke]").onclick = (e)=> armConfirm(e.target, async ()=>{
       try{
         const result = await api("/api/admin/users/"+id, {method:"DELETE"});
@@ -1337,8 +1079,10 @@ function openContentForm(doc){
   <label>Type</label>
   <select class="field" id="cType">
     <option value="ppt">PPT / Presentation</option>
-    <option value="video">Video</option>
+    <option value="video">Video (uploaded file / direct URL)</option>
+    <option value="youtube">YouTube Video (unlisted link)</option>
     <option value="doc">Document</option>
+    <option value="image">Image / Poster</option>
     <option value="link">Link</option>
   </select>
   <label>Topic / Module</label>
@@ -1347,15 +1091,18 @@ function openContentForm(doc){
   <p style="font-size:11px;color:var(--muted);margin:-2px 0 6px">Content sharing a topic is grouped together for staff and unlocks one shared assessment once all of it is completed.</p>
   <label>Title</label><input class="field" id="cTitle" value="${escapeAttr(c.title)}">
   <label>Description</label><input class="field" id="cDesc" value="${escapeAttr(c.description)}">
-  <label>URL (external link, or leave blank and upload a file below)</label>
-  <input class="field" id="cUrl" value="${escapeAttr(c.url||"")}">
-  <label>Or upload a file (video/PDF/PPT export)</label>
-  <input class="field" type="file" id="cFile">
+  <label id="cUrlLabel">URL (external link, or leave blank and upload a file below)</label>
+  <input class="field" id="cUrl" value="${escapeAttr(c.url||"")}" placeholder="">
+  <div id="cFileWrap">
+    <label>Or upload a file (video/PDF/PPT/image — up to ${MAX_UPLOAD_MB}MB)</label>
+    <input class="field" type="file" id="cFile">
+    <div id="cFileInfo" style="font-size:11px;color:var(--muted);margin-top:-4px"></div>
+  </div>
   <div id="cDurationWrap" class="hidden">
-    <label>Required watch time before staff can mark this video complete (minutes) *</label>
-    <p style="font-size:11px;color:var(--muted);margin:2px 0 6px">seconds ÷ 60 = minutes (e.g. 24 sec ÷ 60 = 0.4)</p>
-    <input class="field" id="cDuration" type="number" min="0.5" step="0.5" value="${c.requiredMinutes||""}">
-    <p style="font-size:11px;color:var(--muted)">Staff must accumulate this much actual playing time — pauses and seek-ahead don't count toward it — before "Mark as completed" becomes clickable for them.</p>
+    <label>Required watch time before staff can mark this video complete (MM:SS) *</label>
+    <p style="font-size:11px;color:var(--muted);margin:2px 0 6px">Type it as minutes:seconds — e.g. a 24-second video is <code>00:24</code>, five and a half minutes is <code>05:30</code>. Max 15:00.</p>
+    <input class="field" id="cDuration" type="text" placeholder="MM:SS" maxlength="5" value="${c.requiredMinutes?minutesToMmss(c.requiredMinutes):""}">
+    <p style="font-size:11px;color:var(--muted)">Staff must accumulate this much actual playing time — pauses and seek-ahead don't count toward it — before "Mark as completed" becomes clickable for them. This is tracked for real on YouTube videos too, not just uploaded ones.</p>
   </div>
   <p style="font-size:11px;color:var(--muted)">Staff view everything on the dashboard itself — pick a URL/file that's viewable without a login wall so the in-page preview works.</p>
   <div class="top-actions">
@@ -1365,28 +1112,65 @@ function openContentForm(doc){
   document.getElementById("adminContentList").prepend(wrap);
   const typeSel = wrap.querySelector("#cType");
   const durWrap = wrap.querySelector("#cDurationWrap");
+  const fileWrap = wrap.querySelector("#cFileWrap");
+  const urlLabel = wrap.querySelector("#cUrlLabel");
+  const urlInput = wrap.querySelector("#cUrl");
   typeSel.value = c.type;
-  const syncDurVisibility = ()=> durWrap.classList.toggle("hidden", typeSel.value!=="video");
-  typeSel.onchange = syncDurVisibility;
-  syncDurVisibility();
+  const syncVisibility = ()=>{
+    const t = typeSel.value;
+    durWrap.classList.toggle("hidden", t!=="video" && t!=="youtube");
+    fileWrap.classList.toggle("hidden", t==="youtube"); // YouTube is paste-only, no file upload
+    if(t==="youtube"){
+      urlLabel.textContent = "YouTube URL *";
+      urlInput.placeholder = "e.g. https://youtu.be/XXXXXXXXXXX or https://www.youtube.com/watch?v=XXXXXXXXXXX";
+    } else {
+      urlLabel.textContent = "URL (external link, or leave blank and upload a file below)";
+      urlInput.placeholder = "";
+    }
+  };
+  typeSel.onchange = syncVisibility;
+  syncVisibility();
+  const fileInput = wrap.querySelector("#cFile");
+  const fileInfo = wrap.querySelector("#cFileInfo");
+  fileInput.onchange = ()=>{
+    const f = fileInput.files[0];
+    if(!f){ fileInfo.textContent=""; return; }
+    const mb = (f.size/(1024*1024));
+    let msg = `Selected file: ${mb.toFixed(1)}MB`;
+    if(mb>50){
+      msg += ` — bigger than 50MB. If your Supabase project is still on the Free plan, uploads over 50MB will fail no matter what (Free plan hard-caps the "Global file size limit" in Storage Settings at 50MB). Upgrade to Supabase Pro and raise that setting to allow this, or use a YouTube (unlisted) link instead.`;
+    }
+    fileInfo.textContent = msg;
+    fileInfo.style.color = mb>50 ? "#f0ad4e" : "var(--muted)";
+  };
   wrap.querySelector("#cCancel").onclick = ()=>wrap.remove();
   wrap.querySelector("#cSave").onclick = async ()=>{
     let url = wrap.querySelector("#cUrl").value.trim();
     const file = wrap.querySelector("#cFile").files[0];
     const type = typeSel.value;
     let requiredMinutes = null;
-    if(type==="video"){
-      const durVal = parseFloat(wrap.querySelector("#cDuration").value);
-      if(!durVal || durVal<=0){ showToast("Enter the required watch time in minutes for this video."); return; }
-      requiredMinutes = durVal;
+    if(type==="youtube"){
+      if(!extractYoutubeId(url)){ showToast("Enter a valid YouTube URL (or just the video ID)."); return; }
     }
-    if(file){
+    if(type==="video" || type==="youtube"){
+      const raw = wrap.querySelector("#cDuration").value.trim();
+      const secs = mmssToSeconds(raw);
+      if(secs===null || secs<=0){ showToast("Enter the required watch time as MM:SS (e.g. 05:30)."); return; }
+      if(secs>900){ showToast("Required watch time can't be more than 15:00."); return; }
+      requiredMinutes = secs/60;
+    }
+    if(file && type!=="youtube"){
       try{
         const fd = new FormData(); fd.append("file", file);
         const res = await apiUpload("/api/admin/upload", fd);
         url = res.url;
       }
-      catch(e){ showToast("Upload failed."); return; }
+      catch(e){
+        if(e && e.data && e.data.error==="file_too_large") showToast(`That file is over the ${e.data.maxMb}MB server limit.`);
+        else if(e && e.data && e.data.error==="file_too_large_for_bucket") showToast("Upload rejected by Supabase Storage — the project's file size limit (Storage → Settings) is lower than this file. On the Free plan that's capped at 50MB.");
+        else showToast("Upload failed.");
+        return;
+      }
     }
     const data = {
       persona: state.persona,

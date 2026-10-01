@@ -296,25 +296,18 @@ function wireUserTypeahead({inputEl, hiddenIdEl, listEl, fetchCandidates}){
       if(q.length<1){ listEl.innerHTML=""; listEl.classList.add("hidden"); return; }
       const candidates = await fetchCandidates(q);
       if(candidates.length===0){ listEl.innerHTML = `<div style="padding:6px;color:var(--muted);font-size:12px">No matching names.</div>`; listEl.classList.remove("hidden"); return; }
-      listEl.innerHTML = candidates.map(c=>`<div class="typeahead-row" data-id="${escapeAttr(c.id)}" data-name="${escapeAttr(c.name)}" style="padding:6px;cursor:pointer;border-bottom:1px solid var(--border)"><b>${escapeHtml(c.name)}</b> <span style="color:var(--muted);font-size:12px">${escapeHtml(c.primaryRole||c.primary_role||"")} · ${escapeHtml(c.hub||"")}</span></div>`).join("");
+      listEl.innerHTML = candidates.map(c=>`<div class="typeahead-row" data-id="${escapeAttr(c.id)}" style="padding:6px;cursor:pointer;border-bottom:1px solid var(--border)"><b>${escapeHtml(c.name)}</b> <span style="color:var(--muted);font-size:12px">${escapeHtml(c.primaryRole||c.primary_role||"")} · ${escapeHtml(c.hub||"")}</span></div>`).join("");
       listEl.classList.remove("hidden");
       listEl.querySelectorAll("[data-id]").forEach(row=>{
-        // mousedown, not click: it fires BEFORE the input's blur event, so
-        // the selection registers even though clicking the row moves focus
-        // away from the input. (click+blur here was a race — blur could
-        // hide the list before the row's click ever landed.)
-        row.addEventListener("mousedown", (e)=>{
-          e.preventDefault();
+        row.onclick = ()=>{
           hiddenIdEl.value = row.dataset.id;
-          inputEl.value = row.dataset.name;
+          inputEl.value = row.querySelector("b").textContent;
           listEl.innerHTML=""; listEl.classList.add("hidden");
-        });
+        };
       });
     }, 200);
   });
-  document.addEventListener("click", (e)=>{
-    if(e.target!==inputEl && !listEl.contains(e.target)) listEl.classList.add("hidden");
-  });
+  inputEl.addEventListener("blur", ()=> setTimeout(()=>listEl.classList.add("hidden"), 150));
 }
 function renderRegister(prefill){
   crumbSub.textContent = "New user registration";
@@ -499,7 +492,7 @@ function renderRevoked(){
 }
 
 // ---------------- STAFF VIEW ----------------
-function contentIcon(t){ return t==="ppt"?"📊": t==="video"?"🎬": t==="doc"?"📄":"🔗"; }
+function contentIcon(t){ return t==="ppt"?"📊": t==="video"?"🎬": t==="youtube"?"📺": t==="doc"?"📄": t==="image"?"🖼️":"🔗"; }
 
 let currentContentDocs = [];  // [{id, data}] for the persona currently on screen
 let currentProgress = {};     // {contentId: true} completed-by-this-user map
@@ -517,7 +510,7 @@ async function renderPersona(){
   state.multi = false;
   const p = state.persona;
   crumbSub.textContent = `Signed in as ${state.profile?.name||""} · Role: ${p}${state.kiosk?" · 🔑 kiosk login":""}`;
-  app.innerHTML = `<div class="row"><div class="section-title" style="margin:0">🎓 Training Content</div>
+  app.innerHTML = `<div class="row"><div class="section-title" style="margin:0">${ICONS[p]||"🎓"} ${p} — Training Content</div>
   <div class="top-actions">
     <button class="btn btn-sm" id="wrongRole">${state.kiosk?"Not you? Logout":"Wrong role? Request change"}</button>
   </div></div>
@@ -594,18 +587,10 @@ async function loadMyTeamList(){
   try{
     const { team } = await api("/api/my-team?uid="+encodeURIComponent(currentUid()));
     el.innerHTML = team.length===0 ? `<div class="empty">No one tagged to you yet.</div>` :
-      team.map(({id,data:p,status})=>{
-        const s = status || {assigned:0, completed:0, pending:0};
-        return `<div style="padding:4px 0;border-bottom:1px solid var(--border)">
-        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;font-size:13px">
-          <span><b>${escapeHtml(p.name)}</b> — ${escapeHtml(p.primaryRole||"")} · ${escapeHtml(p.hub||"")} —
-            <a href="#" class="teamStatusLink" data-target="${escapeAttr(id)}" style="color:var(--accent,#2f6fed);text-decoration:underline">Assigned: ${s.assigned} · Pending: ${s.pending} · Completed: ${s.completed}</a>
-          </span>
-          <button class="btn btn-sm btn-danger" data-revoke="${escapeAttr(id)}">Revoke</button>
-        </div>
-        <div id="teamDetail_${escapeAttr(id)}" class="hidden" style="margin-top:6px"></div>
-      </div>`;
-      }).join("");
+      team.map(({id,data:p})=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;padding:4px 0;border-bottom:1px solid var(--border)">
+        <span><b>${escapeHtml(p.name)}</b> — ${escapeHtml(p.primaryRole||"")} · ${escapeHtml(p.hub||"")}</span>
+        <button class="btn btn-sm btn-danger" data-revoke="${escapeAttr(id)}">Revoke</button>
+      </div>`).join("");
     el.querySelectorAll("[data-revoke]").forEach(btn=>{
       btn.onclick = async ()=>{
         if(!confirm("Revoke this user's access?")) return;
@@ -613,33 +598,7 @@ async function loadMyTeamList(){
         catch(e){ showToast("Could not revoke."); }
       };
     });
-    el.querySelectorAll(".teamStatusLink").forEach(link=>{
-      link.onclick = (e)=>{
-        e.preventDefault();
-        const targetId = link.dataset.target;
-        const detailEl = document.getElementById("teamDetail_"+targetId);
-        if(!detailEl.classList.contains("hidden")){ detailEl.classList.add("hidden"); return; }
-        loadTeamMemberTopicSummary(targetId, detailEl);
-      };
-    });
   }catch(e){ el.innerHTML = `<div class="empty">Could not load team.</div>`; }
-}
-async function loadTeamMemberTopicSummary(targetId, detailEl){
-  detailEl.classList.remove("hidden");
-  detailEl.innerHTML = `<div class="empty">Loading…</div>`;
-  try{
-    const { topics } = await api("/api/my-team/"+targetId+"/topic-summary?uid="+encodeURIComponent(currentUid()));
-    if(topics.length===0){ detailEl.innerHTML = `<div class="empty">No content assigned yet.</div>`; return; }
-    const badge = s => s==="Completed" ? '<span class="tag" style="background:#e6f6ec;color:var(--ok)">✅ Completed</span>'
-      : s==="Ongoing" ? '<span class="tag" style="background:#fff3e0;color:#a86a00">🟡 Ongoing</span>'
-      : '<span class="tag" style="background:#fdecea;color:var(--danger)">⏳ Pending</span>';
-    detailEl.innerHTML = `<table style="width:100%;font-size:12px;border-collapse:collapse">
-      <tr style="text-align:left;color:var(--muted)"><th>Persona</th><th>Topic/Module</th><th>Status</th><th>Progress</th></tr>
-      ${topics.map(t=>`<tr style="border-top:1px solid var(--border)">
-        <td>${escapeHtml(t.persona)}</td><td>${escapeHtml(t.topic)}</td><td>${badge(t.status)}</td><td>${t.completed}/${t.total} done</td>
-      </tr>`).join("")}
-    </table>`;
-  }catch(e){ detailEl.innerHTML = `<div class="empty">Could not load details.</div>`; }
 }
 
 async function loadContentAndProgress(p){
@@ -720,18 +679,15 @@ function renderTopicGroups(p){
 let multiGroups = []; // [{persona, topic, items:[{id,data,done}], allDone}]
 
 async function renderMultiPersona(roles){
-  const displayRole = state.profile?.primaryRole || roles[0];
-  crumbSub.textContent = `Signed in as ${state.profile?.name||""} · Role: ${displayRole}${state.kiosk?" · 🔑 kiosk login":""}`;
+  crumbSub.textContent = `Signed in as ${state.profile?.name||""} · Roles: ${roles.join(", ")}${state.kiosk?" · 🔑 kiosk login":""}`;
   app.innerHTML = `<div class="row"><div class="section-title" style="margin:0">🎓 Training Content</div>
   <div class="top-actions">
     <button class="btn btn-sm" id="wrongRole">${state.kiosk?"Not you? Logout":"Wrong role? Request change"}</button>
   </div></div>
-  <p style="color:var(--muted);font-size:12px;margin-top:-4px">Your training content also includes what's assigned to ${roles.filter(r=>r!==displayRole).map(r=>escapeHtml(r)).join(", ")} — everything is shown below, split into Pending and Completed.</p>
-  <div id="myTeamSection"></div>
+  <p style="color:var(--muted);font-size:12px;margin-top:-4px">You're assigned multiple roles (${roles.map(r=>escapeHtml(r)).join(", ")}) — everything is shown below, split into Pending and Completed.</p>
   <div id="assignedSection"></div>
   <div id="multiGroups">Loading…</div>`;
   document.getElementById("wrongRole").onclick = ()=> state.kiosk ? logout() : renderRegister(state.profile);
-  renderMyTeamSection();
   await loadMultiPersonaContent(roles);
   loadAndRenderAssigned();
 }
@@ -959,14 +915,26 @@ async function loadAndRenderAssigned(){
 function openContentViewer(persona, contentId, c){
   const already = !!currentProgress[contentId];
   const isVideo = c.type==="video";
+  const isYoutube = c.type==="youtube";
+  const youtubeId = isYoutube ? extractYoutubeId(c.url) : null;
   const overlay = document.createElement("div");
   overlay.className = "viewer-overlay";
   let mediaHtml;
   if(isVideo){
-    mediaHtml = `<video id="viewerVideo" controls controlsList="nodownload noplaybackrate" disablePictureInPicture autoplay playsinline style="width:100%;height:100%;object-fit:contain;background:#000" src="${escapeAttr(c.url||"")}"></video>`;
+    mediaHtml = `<video id="viewerVideo" controls autoplay playsinline style="width:100%;height:100%;object-fit:contain;background:#000" src="${escapeAttr(c.url||"")}"></video>`;
+  } else if(isYoutube){
+    // Filled in by the YouTube IFrame API below, not by this markup directly —
+    // that's what lets us track real watch time (play/pause/seek) the same
+    // way the native <video> element does above, instead of just embedding
+    // a plain iframe we'd have no visibility into.
+    mediaHtml = youtubeId
+      ? `<div id="ytPlayer-${contentId}" style="width:100%;height:100%;background:#000"></div>`
+      : `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:#111;color:#f66">Couldn't read a YouTube video ID from this content's URL.</div>`;
   } else if(c.type==="ppt" || c.type==="doc"){
     const embedUrl = "https://view.officeapps.live.com/op/embed.aspx?src=" + encodeURIComponent(c.url||"");
     mediaHtml = `<iframe src="${escapeAttr(embedUrl)}" style="width:100%;height:100%;border:none;background:#fff" allowfullscreen></iframe>`;
+  } else if(c.type==="image"){
+    mediaHtml = `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:#111"><img src="${escapeAttr(c.url||"")}" style="max-width:100%;max-height:100%;object-fit:contain"></div>`;
   } else {
     mediaHtml = `<iframe src="${escapeAttr(c.url||"")}" style="width:100%;height:100%;border:none;background:#fff"></iframe>`;
   }
@@ -988,17 +956,24 @@ function openContentViewer(persona, contentId, c){
 
   overlay._doClose = ()=>{
     if(overlay._timer) clearInterval(overlay._timer);
+    if(overlay._ytStop) overlay._ytStop();
     document.body.style.overflow = "";
     overlay.remove();
   };
   document.getElementById("closeViewer").onclick = overlay._doClose;
 
+  // The YouTube player has to exist (so the video is actually visible)
+  // whether or not this is already completed — gating only decides
+  // whether we also track watch time toward unlocking the button.
+  if(isYoutube && youtubeId) initYoutubePlayer(overlay, contentId, youtubeId, already ? null : {persona, c, btn});
+
   if(!already){
     api("/api/progress/start", {method:"POST", body: JSON.stringify({persona, uid: currentUid(), contentId})}).catch(()=>{});
     if(isVideo) setupVideoGate(overlay, persona, contentId, c, btn);
-    else setupDwellGate(overlay, btn, ()=> markContentComplete(persona, contentId));
+    else if(!isYoutube) setupDwellGate(overlay, btn, ()=> markContentComplete(persona, contentId));
   }
 }
+
 
 function setupDwellGate(overlay, btn, onDone){
   let secondsLeft = 8;
@@ -1023,13 +998,97 @@ function fmtTime(s){
   return Math.floor(s/60)+":"+String(s%60).padStart(2,"0");
 }
 
+// Accepts a full YouTube URL (watch/youtu.be/embed/shorts) or a bare video ID.
+function extractYoutubeId(url){
+  url = String(url||"").trim();
+  let m = /[?&]v=([a-zA-Z0-9_-]{6,})/.exec(url); if(m) return m[1];
+  m = /youtu\.be\/([a-zA-Z0-9_-]{6,})/.exec(url); if(m) return m[1];
+  m = /youtube\.com\/(?:embed|shorts)\/([a-zA-Z0-9_-]{6,})/.exec(url); if(m) return m[1];
+  if(/^[a-zA-Z0-9_-]{6,}$/.test(url)) return url;
+  return null;
+}
+
+// Loads YouTube's IFrame Player API once (shared across every video opened
+// in this session) and resolves when window.YT.Player is ready to use.
+let _ytApiPromise = null;
+function loadYoutubeApi(){
+  if(window.YT && window.YT.Player) return Promise.resolve();
+  if(_ytApiPromise) return _ytApiPromise;
+  _ytApiPromise = new Promise((resolve)=>{
+    const prevCb = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = ()=>{ if(prevCb) prevCb(); resolve(); };
+    const tag = document.createElement("script");
+    tag.src = "https://www.youtube.com/iframe_api";
+    document.head.appendChild(tag);
+  });
+  return _ytApiPromise;
+}
+
+// Mirrors setupVideoGate's logic (accumulate real play time, ignore
+// pauses and seek-ahead jumps, unlock once the required watch time is
+// reached) but driven by the YouTube IFrame Player API's state-change
+// events + getCurrentTime() instead of a native <video> element, since an
+// embedded Drive/plain iframe gives JS no visibility into playback at all.
+// `gate` is {persona, c, btn} to enforce watch time, or null/undefined to
+// just play the video with no gating (used for already-completed items).
+function initYoutubePlayer(overlay, contentId, videoId, gate){
+  loadYoutubeApi().then(()=>{
+    if(!document.body.contains(overlay)) return; // closed before the API finished loading
+    const requiredSeconds = (gate && gate.c.requiredMinutes) ? Math.round(gate.c.requiredMinutes*60) : null;
+    let pollTimer = null, playedSeconds = 0, lastTime = 0, unlocked = false;
+
+    const unlock = ()=>{
+      if(!gate || unlocked) return;
+      unlocked = true;
+      gate.btn.disabled = false;
+      gate.btn.textContent = "✅ Mark as completed";
+      gate.btn.onclick = ()=>{ markContentComplete(gate.persona, contentId); overlay._doClose(); };
+      const closeBtn = document.getElementById("closeViewer");
+      if(closeBtn) closeBtn.style.display = "none";
+    };
+    const updateLabel = ()=>{
+      if(!gate || unlocked) return;
+      gate.btn.textContent = requiredSeconds ? `⏳ Watched ${fmtTime(playedSeconds)} / ${fmtTime(requiredSeconds)}` : "⏳ Watch to the end…";
+    };
+    updateLabel();
+
+    const player = new YT.Player("ytPlayer-"+contentId, {
+      videoId,
+      playerVars: { rel: 0, modestbranding: 1, playsinline: 1 },
+      events: {
+        onStateChange: (e)=>{
+          if(!gate) return; // playback only, nothing to gate
+          if(e.data === YT.PlayerState.PLAYING){
+            lastTime = player.getCurrentTime();
+            if(pollTimer) clearInterval(pollTimer);
+            pollTimer = setInterval(()=>{
+              const cur = player.getCurrentTime();
+              const delta = cur - lastTime;
+              // small-delta cap stops a seek-ahead jump from counting as watched
+              if(delta > 0 && delta < 1.5) playedSeconds += delta;
+              lastTime = cur;
+              if(requiredSeconds && playedSeconds >= requiredSeconds) unlock();
+              else updateLabel();
+            }, 500);
+          } else {
+            if(pollTimer){ clearInterval(pollTimer); pollTimer = null; }
+            if(e.data === YT.PlayerState.ENDED) unlock();
+          }
+        }
+      }
+    });
+    overlay._ytPlayer = player;
+    overlay._ytStop = ()=>{
+      if(pollTimer) clearInterval(pollTimer);
+      try{ player.destroy(); }catch(err){}
+    };
+  });
+}
+
 function setupVideoGate(overlay, persona, contentId, c, btn){
   const video = document.getElementById("viewerVideo");
-  const requiredSecondsRaw = c.requiredMinutes ? Math.round(c.requiredMinutes*60) : null;
-  let unlocked = false;
+  const requiredSeconds = c.requiredMinutes ? Math.round(c.requiredMinutes*60) : null;
   const unlock = ()=>{
-    if(unlocked) return;
-    unlocked = true;
     btn.disabled = false;
     btn.textContent = "✅ Mark as completed";
     btn.onclick = ()=>{ markContentComplete(persona, contentId); overlay._doClose(); };
@@ -1037,73 +1096,34 @@ function setupVideoGate(overlay, persona, contentId, c, btn){
     if(closeBtn) closeBtn.style.display = "none"; // once Mark Complete is active, closing only happens via that button
   };
 
-  // ---- No skipping ahead (applies to every video, legacy or timed) ----
-  // maxReached = furthest point genuinely PLAYED to. Any seek (progress bar,
-  // skip buttons, arrow keys, media keys) past it is snapped back. Going
-  // backwards is allowed. Because of this, "ended" can only fire after real
-  // playback, never from dragging/skipping to the end.
-  const SEEK_TOLERANCE = 1;
-  let maxReached = 0, playedSeconds = 0, lastTime = 0;
-  video.addEventListener("seeking", ()=>{
-    if(!unlocked && video.currentTime > maxReached + SEEK_TOLERANCE){
-      video.currentTime = maxReached;
-      showToast("Skipping ahead isn't allowed — please watch the video.");
-    }
-    lastTime = video.currentTime;
-  });
-  // Playback speed is locked to 1x so it can't be used to shorten the watch.
-  video.addEventListener("ratechange", ()=>{ if(video.playbackRate !== 1) video.playbackRate = 1; });
-
-  if(!requiredSecondsRaw){
-    // Legacy content saved before a required watch-time existed — must play
-    // through to the end (skipping is blocked above, so "ended" is genuine).
+  if(!requiredSeconds){
+    // Legacy content saved before a required watch-time existed — fall
+    // back to "must play through to the end".
     btn.textContent = "⏳ Watch to the end…";
-    video.addEventListener("timeupdate", ()=>{
-      if(!video.seeking && !video.paused && video.currentTime > maxReached) maxReached = video.currentTime;
-    });
     video.addEventListener("ended", unlock);
     return;
   }
 
-  // The requirement can't exceed the video's own length (otherwise it could
-  // never be met) — cap it once the duration is known.
-  let requiredSeconds = requiredSecondsRaw;
-  const applyDurationCap = ()=>{
-    if(isFinite(video.duration) && video.duration > 0){
-      requiredSeconds = Math.min(requiredSecondsRaw, Math.max(1, video.duration - 2));
-      updateLabel();
-    }
-  };
+  let playedSeconds = 0, lastTime = 0, unlocked = false;
   const updateLabel = ()=>{ if(!unlocked) btn.textContent = `⏳ Watched ${fmtTime(playedSeconds)} / ${fmtTime(requiredSeconds)}`; };
   updateLabel();
-  video.addEventListener("loadedmetadata", applyDurationCap);
-  if(video.readyState >= 1) applyDurationCap();
 
   video.addEventListener("play", ()=>{ lastTime = video.currentTime; });
+  video.addEventListener("seeking", ()=>{ lastTime = video.currentTime; });
   video.addEventListener("timeupdate", ()=>{
     const cur = video.currentTime;
-    // timeupdate only fires during real playback, so pausing naturally stops
-    // the count; the delta cap keeps any jump from being counted as watched.
+    // timeupdate only fires during playback, so pausing naturally stops
+    // accumulation; the small delta cap stops a seek-ahead jump from
+    // being counted as watched time.
     if(!video.paused && !video.seeking){
       const delta = cur - lastTime;
       if(delta > 0 && delta < 1.5) playedSeconds += delta;
-      if(cur > maxReached) maxReached = cur;
     }
     lastTime = cur;
-    if(!unlocked && playedSeconds >= requiredSeconds) unlock();
+    if(!unlocked && playedSeconds >= requiredSeconds){ unlocked = true; unlock(); }
     else updateLabel();
   });
-  // "ended" no longer unlocks by itself — it only counts if enough time was
-  // genuinely watched (small tolerance for timeupdate granularity).
-  video.addEventListener("ended", ()=>{
-    if(unlocked) return;
-    if(playedSeconds >= requiredSeconds - 2){ unlock(); }
-    else {
-      showToast(`Keep watching — ${fmtTime(requiredSeconds - playedSeconds)} more to go. Restarting the video.`);
-      video.currentTime = 0;
-      video.play().catch(()=>{});
-    }
-  });
+  video.addEventListener("ended", ()=>{ if(!unlocked){ unlocked = true; unlock(); } });
 }
 
 async function markContentComplete(persona, contentId){

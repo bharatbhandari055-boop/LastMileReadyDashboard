@@ -43,7 +43,18 @@ function normPhone(s) { return String(s || "").replace(/[\s\-+]/g, "").toLowerCa
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024 } });
+
+// Training content (video/PPT/doc/image) uploads. Raised from 200MB so a
+// full ~15-minute training video has room — see MAX_UPLOAD_MB below for
+// the single source of truth other messages/limits refer back to.
+// NOTE: the server accepting a bigger file is only half the story — the
+// Supabase Storage "Global file size limit" (Project -> Storage ->
+// Settings) has to be raised too, and on Supabase's Free plan it is
+// HARD-CAPPED at 50MB and cannot be raised by this code or any other —
+// only upgrading to the Pro plan unlocks a higher cap (up to 500GB). See
+// the startup note below and the admin upload form's helper text.
+const MAX_UPLOAD_MB = 400;
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024 } });
 
 function requireAdmin(req, res, next) {
   const hdr = req.headers.authorization || "";
@@ -1108,17 +1119,37 @@ app.delete("/api/admin/content/:id", async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: "server_error" }); }
 });
 
-// File upload -> Supabase Storage
-app.post("/api/admin/upload", upload.single("file"), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ error: "no_file" });
-    const ext = (req.file.originalname.split(".").pop() || "bin").toLowerCase();
-    const fname = "content/" + Date.now() + "_" + crypto.randomBytes(6).toString("hex") + "." + ext;
-    const { error } = await sb.storage.from(STORAGE_BUCKET).upload(fname, req.file.buffer, { contentType: req.file.mimetype, upsert: false });
-    ok(error);
-    const { data } = sb.storage.from(STORAGE_BUCKET).getPublicUrl(fname);
-    res.json({ url: data.publicUrl });
-  } catch (e) { console.error(e); res.status(500).json({ error: "upload_failed" }); }
+// File upload -> Supabase Storage. Any viewable/readable file is accepted
+// (video/PPT/doc/image/etc — no type allowlist here); the only limit is
+// size, via MAX_UPLOAD_MB above. multer errors (e.g. LIMIT_FILE_SIZE) are
+// caught explicitly so an oversized file comes back as a clear 413
+// instead of a generic failure.
+app.post("/api/admin/upload", (req, res) => {
+  upload.single("file")(req, res, async (mErr) => {
+    if (mErr) {
+      if (mErr.code === "LIMIT_FILE_SIZE") return res.status(413).json({ error: "file_too_large", maxMb: MAX_UPLOAD_MB });
+      console.error(mErr);
+      return res.status(400).json({ error: "upload_failed" });
+    }
+    try {
+      if (!req.file) return res.status(400).json({ error: "no_file" });
+      const ext = (req.file.originalname.split(".").pop() || "bin").toLowerCase();
+      const fname = "content/" + Date.now() + "_" + crypto.randomBytes(6).toString("hex") + "." + ext;
+      const { error } = await sb.storage.from(STORAGE_BUCKET).upload(fname, req.file.buffer, { contentType: req.file.mimetype, upsert: false });
+      // Surface Supabase's own per-file cap (50MB on the Free plan, however
+      // big MAX_UPLOAD_MB above is) as the same clear error shape, instead
+      // of a generic 500 — this is the far more common way uploads fail.
+      if (error) {
+        const msg = String((error && error.message) || "");
+        if (/exceeded the maximum allowed size|Payload too large/i.test(msg)) {
+          return res.status(413).json({ error: "file_too_large_for_bucket", detail: msg });
+        }
+        throw error;
+      }
+      const { data } = sb.storage.from(STORAGE_BUCKET).getPublicUrl(fname);
+      res.json({ url: data.publicUrl });
+    } catch (e) { console.error(e); res.status(500).json({ error: "upload_failed" }); }
+  });
 });
 
 // Distinct topics that currently have content under a persona, in the
@@ -1457,9 +1488,32 @@ app.use(express.static(path.join(__dirname, "public")));
 app.get("/admin", (req, res) => res.sendFile(path.join(__dirname, "public", "admin.html")));
 app.get("/", (req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
 
-app.listen(PORT, () => {
+// Raises the content-files bucket's own per-file cap to match
+// MAX_UPLOAD_MB, so the bucket isn't a stricter bottleneck than the server.
+// This is separate from — and cannot override — the Supabase PROJECT's
+// "Global file size limit" (Project -> Storage -> Settings), which is the
+// one that's hard-capped at 50MB on the Free plan. If that project-level
+// setting is still 50MB, big-video uploads will keep failing no matter
+// what this sets, until the plan is upgraded and that setting is raised.
+async function raiseBucketFileSizeLimit() {
+  try {
+    const { error } = await sb.storage.updateBucket(STORAGE_BUCKET, { fileSizeLimit: `${MAX_UPLOAD_MB}MB` });
+    if (error) console.warn("Could not raise " + STORAGE_BUCKET + " bucket file size limit (likely capped by the project's Free-plan Storage Settings):", error.message);
+  } catch (e) { console.warn("Could not raise bucket file size limit:", e.message); }
+}
+
+const server = app.listen(PORT, () => {
   console.log("LastMile Ready dashboard listening on " + PORT);
   seedSuperAdmin();
+  raiseBucketFileSizeLimit();
   syncUsersToGoogleSheet();
   setInterval(syncUsersToGoogleSheet, 30 * 60 * 1000);
 });
+// Generous timeouts so a large video upload over a slow connection isn't
+// cut off by Node's own defaults. (Render's own reverse-proxy may still
+// impose a separate limit outside this app's control — if uploads still
+// stall after the size settings above are fixed, that's the next thing to
+// check with Render.)
+server.requestTimeout = 10 * 60 * 1000; // 10 min
+server.headersTimeout = 10 * 60 * 1000 + 5000;
+server.keepAliveTimeout = 10 * 60 * 1000;
