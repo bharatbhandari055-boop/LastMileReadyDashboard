@@ -548,6 +548,7 @@ async function renderMyTeamSection(){
     <div id="approvalsUploadResult"></div>
     <div class="section-title">My Team</div>
     <div id="myTeamList">Loading…</div>
+    <div id="myTeamDetail"></div>
   </div>`;
   loadMyApprovals();
   loadMyTeamList();
@@ -582,15 +583,48 @@ async function loadMyApprovals(){
       pending.map(r=>`<div style="font-size:13px;padding:4px 0;border-bottom:1px solid var(--border)"><b>${escapeHtml(r.name)}</b> — ${escapeHtml(r.phone)} · ${escapeHtml(r.role)} · ${escapeHtml(r.hub)}</div>`).join("");
   }catch(e){ el.innerHTML = `<div class="empty">Could not load.</div>`; }
 }
+// Full downstream tree (Regional Manager sees every level below them —
+// City Lead, Hub Manager and above, Team Leader, Scanner — not just
+// direct reports; Hub Manager and above / City Lead see their own direct
+// reports, same as before). Grouped by role level, each person's
+// Assigned/Completed/Pending numbers are clickable and open the
+// topic-wise breakdown for that one person below the list.
 async function loadMyTeamList(){
   const el = document.getElementById("myTeamList");
   try{
     const { team } = await api("/api/my-team?uid="+encodeURIComponent(currentUid()));
-    el.innerHTML = team.length===0 ? `<div class="empty">No one tagged to you yet.</div>` :
-      team.map(({id,data:p})=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;padding:4px 0;border-bottom:1px solid var(--border)">
-        <span><b>${escapeHtml(p.name)}</b> — ${escapeHtml(p.primaryRole||"")} · ${escapeHtml(p.hub||"")}</span>
-        <button class="btn btn-sm btn-danger" data-revoke="${escapeAttr(id)}">Revoke</button>
-      </div>`).join("");
+    if(team.length===0){ el.innerHTML = `<div class="empty">No one tagged to you yet.</div>`; return; }
+    const groups = new Map(); // role -> [{id,data,status}]
+    PERSONAS.forEach(role=>{
+      const inRole = team.filter(t=>(t.data.primaryRole||"")===role);
+      if(inRole.length) groups.set(role, inRole);
+    });
+    // anyone whose primaryRole doesn't match a known persona still shows, grouped under a catch-all
+    const unknown = team.filter(t=> !PERSONAS.includes(t.data.primaryRole||""));
+    if(unknown.length) groups.set("Other", unknown);
+
+    let html = "";
+    groups.forEach((people, role)=>{
+      html += `<div style="font-weight:600;font-size:13px;margin:10px 0 4px">${escapeHtml(role)} (${people.length})</div>`;
+      people.forEach(({id,data:p,status})=>{
+        const s = status || {assigned:0,completed:0,pending:0,ongoing:0};
+        html += `<div style="padding:6px 0;border-bottom:1px solid var(--border)">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
+            <span style="font-size:13px"><b>${escapeHtml(p.name)}</b> · ${escapeHtml(p.hub||"")}</span>
+            <button class="btn btn-sm btn-danger" data-revoke="${escapeAttr(id)}">Revoke</button>
+          </div>
+          <div class="top-actions" style="margin-top:4px">
+            <button class="btn btn-sm" data-detail="${escapeAttr(id)}">Assigned: ${s.assigned}</button>
+            <button class="btn btn-sm" data-detail="${escapeAttr(id)}" style="color:var(--ok)">Completed: ${s.completed}</button>
+            <button class="btn btn-sm" data-detail="${escapeAttr(id)}" style="color:var(--danger)">Pending: ${s.pending}</button>
+          </div>
+        </div>`;
+      });
+    });
+    el.innerHTML = html;
+    el.querySelectorAll("[data-detail]").forEach(btn=>{
+      btn.onclick = ()=> loadMyTeamMemberDetail(btn.dataset.detail);
+    });
     el.querySelectorAll("[data-revoke]").forEach(btn=>{
       btn.onclick = async ()=>{
         if(!confirm("Revoke this user's access?")) return;
@@ -599,6 +633,31 @@ async function loadMyTeamList(){
       };
     });
   }catch(e){ el.innerHTML = `<div class="empty">Could not load team.</div>`; }
+}
+async function loadMyTeamMemberDetail(targetId){
+  const el = document.getElementById("myTeamDetail");
+  el.innerHTML = `<div class="content-card" style="margin-top:10px">Loading…</div>`;
+  el.scrollIntoView({behavior:"smooth", block:"nearest"});
+  try{
+    const { name, topics } = await api("/api/my-team/"+targetId+"/topic-summary?uid="+encodeURIComponent(currentUid()));
+    const statusColor = s => s==="Completed" ? "var(--ok)" : s==="Ongoing" ? "#a86a00" : "var(--danger)";
+    el.innerHTML = `<div class="content-card" style="margin-top:10px">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <div class="section-title" style="margin:0">📋 ${escapeHtml(name)} — by module</div>
+        <button class="btn btn-sm" id="closeTeamDetail">✕ Close</button>
+      </div>
+      ${topics.length===0 ? `<div class="empty">No content assigned.</div>` : `<table style="width:100%;border-collapse:collapse;margin-top:8px">
+        <tr style="border-bottom:1px solid var(--border)"><th style="text-align:left;padding:6px">Persona</th><th style="text-align:left;padding:6px">Module</th><th style="text-align:left;padding:6px">Status</th><th style="text-align:left;padding:6px">Progress</th></tr>
+        ${topics.map(t=>`<tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:6px">${escapeHtml(t.persona)}</td>
+          <td style="padding:6px">${escapeHtml(t.topic)}</td>
+          <td style="padding:6px;color:${statusColor(t.status)}">${escapeHtml(t.status)}</td>
+          <td style="padding:6px">${t.completed}/${t.total}${t.ongoing?` (+${t.ongoing} in progress)`:""}</td>
+        </tr>`).join("")}
+      </table>`}
+    </div>`;
+    document.getElementById("closeTeamDetail").onclick = ()=>{ el.innerHTML=""; };
+  }catch(e){ el.innerHTML = `<div class="content-card" style="margin-top:10px"><div class="empty">Could not load details.</div></div>`; }
 }
 
 async function loadContentAndProgress(p){
@@ -1036,6 +1095,7 @@ function initYoutubePlayer(overlay, contentId, videoId, gate){
     if(!document.body.contains(overlay)) return; // closed before the API finished loading
     const requiredSeconds = (gate && gate.c.requiredMinutes) ? Math.round(gate.c.requiredMinutes*60) : null;
     let pollTimer = null, playedSeconds = 0, lastTime = 0, unlocked = false;
+    let furthest = 0; // furthest point reached through genuine, un-skipped forward playback
 
     const unlock = ()=>{
       if(!gate || unlocked) return;
@@ -1059,20 +1119,39 @@ function initYoutubePlayer(overlay, contentId, videoId, gate){
         onStateChange: (e)=>{
           if(!gate) return; // playback only, nothing to gate
           if(e.data === YT.PlayerState.PLAYING){
-            lastTime = player.getCurrentTime();
+            const cur = player.getCurrentTime();
+            // Forwarding/skipping ahead is blocked outright — covers both
+            // dragging the scrubber while paused and resuming after one.
+            if(cur > furthest + 1){
+              player.seekTo(furthest, true);
+              showToast("Skipping ahead isn't allowed — please watch through.");
+              lastTime = furthest;
+            } else {
+              lastTime = cur;
+            }
             if(pollTimer) clearInterval(pollTimer);
             pollTimer = setInterval(()=>{
               const cur = player.getCurrentTime();
               const delta = cur - lastTime;
-              // small-delta cap stops a seek-ahead jump from counting as watched
-              if(delta > 0 && delta < 1.5) playedSeconds += delta;
+              if(delta > 1.5){
+                // a jump this size mid-playback is a scrubber drag/seek —
+                // snap straight back to the furthest genuinely-watched point
+                player.seekTo(furthest, true);
+                showToast("Skipping ahead isn't allowed — please watch through.");
+                lastTime = furthest;
+                return;
+              }
+              if(delta > 0){ playedSeconds += delta; if(cur > furthest) furthest = cur; }
               lastTime = cur;
-              if(requiredSeconds && playedSeconds >= requiredSeconds) unlock();
+              if(requiredSeconds && !unlocked && playedSeconds >= requiredSeconds) unlock();
               else updateLabel();
             }, 500);
           } else {
             if(pollTimer){ clearInterval(pollTimer); pollTimer = null; }
-            if(e.data === YT.PlayerState.ENDED) unlock();
+            // Reaching the end only counts if the real required watch time
+            // has actually been accumulated — otherwise someone could skip
+            // to the last second and let it "end" to unlock early.
+            if(e.data === YT.PlayerState.ENDED && (!requiredSeconds || playedSeconds >= requiredSeconds)) unlock();
           }
         }
       }
@@ -1096,34 +1175,51 @@ function setupVideoGate(overlay, persona, contentId, c, btn){
     if(closeBtn) closeBtn.style.display = "none"; // once Mark Complete is active, closing only happens via that button
   };
 
-  if(!requiredSeconds){
-    // Legacy content saved before a required watch-time existed — fall
-    // back to "must play through to the end".
-    btn.textContent = "⏳ Watch to the end…";
-    video.addEventListener("ended", unlock);
-    return;
-  }
-
   let playedSeconds = 0, lastTime = 0, unlocked = false;
-  const updateLabel = ()=>{ if(!unlocked) btn.textContent = `⏳ Watched ${fmtTime(playedSeconds)} / ${fmtTime(requiredSeconds)}`; };
+  let furthest = 0;       // furthest point reached through genuine, un-skipped forward playback
+  let correcting = false; // guard so our own corrective currentTime jump doesn't re-trigger "seeking"
+  const updateLabel = ()=>{ if(!unlocked) btn.textContent = requiredSeconds ? `⏳ Watched ${fmtTime(playedSeconds)} / ${fmtTime(requiredSeconds)}` : "⏳ Watch to the end…"; };
   updateLabel();
 
   video.addEventListener("play", ()=>{ lastTime = video.currentTime; });
-  video.addEventListener("seeking", ()=>{ lastTime = video.currentTime; });
+
+  // Forwarding/skipping ahead is blocked outright — any jump past what's
+  // actually been watched snaps straight back, whether it came from
+  // dragging the scrubber, a keyboard seek, or double-tap-to-skip.
+  video.addEventListener("seeking", ()=>{
+    if(correcting) return;
+    if(video.currentTime > furthest + 1){
+      correcting = true;
+      video.currentTime = furthest;
+      showToast("Skipping ahead isn't allowed — please watch through.");
+      setTimeout(()=>{ correcting = false; }, 50);
+    }
+    lastTime = video.currentTime;
+  });
+
   video.addEventListener("timeupdate", ()=>{
     const cur = video.currentTime;
     // timeupdate only fires during playback, so pausing naturally stops
-    // accumulation; the small delta cap stops a seek-ahead jump from
-    // being counted as watched time.
+    // accumulation; the small delta cap stops anything that slips past the
+    // seek-block above from being counted as watched time.
     if(!video.paused && !video.seeking){
       const delta = cur - lastTime;
       if(delta > 0 && delta < 1.5) playedSeconds += delta;
+      if(cur > furthest) furthest = cur;
     }
     lastTime = cur;
-    if(!unlocked && playedSeconds >= requiredSeconds){ unlocked = true; unlock(); }
+    if(requiredSeconds && !unlocked && playedSeconds >= requiredSeconds){ unlocked = true; unlock(); }
     else updateLabel();
   });
-  video.addEventListener("ended", ()=>{ if(!unlocked){ unlocked = true; unlock(); } });
+
+  // Reaching the end only counts if the real required watch time has
+  // actually been accumulated — without this check, someone could skip to
+  // the last second and let it "end" to unlock early. For legacy content
+  // with no required time set, reaching the end is still the bar.
+  video.addEventListener("ended", ()=>{
+    if(unlocked) return;
+    if(!requiredSeconds || playedSeconds >= requiredSeconds){ unlocked = true; unlock(); }
+  });
 }
 
 async function markContentComplete(persona, contentId){
